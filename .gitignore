@@ -29,6 +29,9 @@ Release/
 # Scratch Documentation (Keeping .github/ fully tracked)
 docs/
 
+# Upstream Reference Codebase (kept locally on disk, untracked in git)
+computah/
+
 # Build Outputs & Binaries (.NET / C#)
 bin/
 obj/
