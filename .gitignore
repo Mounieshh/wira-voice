@@ -46,7 +46,7 @@ obj/
 logs/
 outputs/
 *.log
-diagnostics/
+/diagnostics/
 
 # Operating System Files
 Thumbs.db

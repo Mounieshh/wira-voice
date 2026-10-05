@@ -4,10 +4,9 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using WiraVoice.Core.Audio;
-using WiraVoice.Core.Automation;
+using WiraVoice.Core.Commands;
 using WiraVoice.Core.Config;
-using WiraVoice.Core.Decision;
-using WiraVoice.Core.Orchestration;
+using WiraVoice.Core.Language;
 using WiraVoice.Core.Speech;
 
 namespace WiraVoice.UI;
@@ -41,11 +40,18 @@ public partial class FloatingTopBar : Window
         var cloud = new DeepgramFluxEngine(audio);
         var local = new WhisperLocalEngine(audio);
         var router = new SpeechEngineRouter(cloud, local);
-        var uia = new UiaReader();
-        var jev = new JevOpenRouterClient();
-        var input = new Win32InputActor();
 
-        _coordinator = new CommandCoordinator(router, uia, jev, input);
+        var apiKey = EnvironmentConfig.TypeSafeApiKey;
+        if (string.IsNullOrEmpty(apiKey)) apiKey = EnvironmentConfig.OpenRouterApiKey;
+
+        var endpoint = !string.IsNullOrEmpty(EnvironmentConfig.TypeSafeApiKey)
+            ? new Uri("https://api.typesafe.ai/v1/systemone")
+            : new Uri(EnvironmentConfig.OpenRouterBaseUrl.TrimEnd('/') + "/systemone");
+
+        var jevSelector = new JevSelector(apiKey, EnvironmentConfig.JevModel, endpoint: endpoint);
+        var engine = new CommandEngine(jevSelector);
+
+        _coordinator = new CommandCoordinator(engine, speechEngine: router);
         _viewModel = new TopBarViewModel(_coordinator, router);
         DataContext = _viewModel;
     }

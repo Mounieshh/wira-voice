@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,8 +13,9 @@ using FlaUI.UIA3;
 namespace WiraVoice.Core.Automation;
 
 /// <summary>
-/// Deep module that captures the active foreground window, recursively walks the Microsoft UI Automation 3
-/// accessibility tree, prunes layout noise, and yields interactive control candidates.
+/// Deep module that captures the active foreground window, walks Microsoft UI Automation 3,
+/// and produces AXSnapshot with native node hierarchies and roles.
+/// Equivalent to Computah's AXReader.swift.
 /// </summary>
 public sealed class UiaReader : IUiaReader
 {
@@ -28,22 +30,66 @@ public sealed class UiaReader : IUiaReader
 
     public Task<UiSceneSnapshot> CaptureActiveSceneAsync(int maxNodes = 1500, CancellationToken ct = default)
     {
+        return Task.Run(async () =>
+        {
+            var snapshot = await CaptureAsync(maxNodes, 0.45, null, ct).ConfigureAwait(false);
+            var candidates = AXGrouping.Candidates(snapshot).Select(c =>
+            {
+                var node = snapshot.Nodes[c.NodeID];
+                return new UiControlCandidate(
+                    Id: c.Id,
+                    Name: node.Label,
+                    Role: node.Role,
+                    Help: node.Help,
+                    BoundingBox: node.Frame ?? Rectangle.Empty,
+                    SupportedOperation: c.Operation.ToWireString(),
+                    NativeElement: node.NativeElement
+                );
+            }).ToList();
+
+            return new UiSceneSnapshot(
+                snapshot.WindowHandle ?? IntPtr.Zero,
+                snapshot.Pid,
+                snapshot.AppName,
+                snapshot.WindowTitle,
+                candidates
+            );
+        }, ct);
+    }
+
+    public Task<AXSnapshot> CaptureAsync(int maxNodes = 900, double seconds = 0.35, int? targetPid = null, CancellationToken ct = default)
+    {
         return Task.Run(() =>
         {
+            var sw = Stopwatch.StartNew();
             IntPtr hwnd = GetForegroundWindow();
-            if (hwnd == IntPtr.Zero)
+            int pid = targetPid ?? 0;
+            string processName = "Unknown";
+
+            if (hwnd != IntPtr.Zero)
             {
-                return new UiSceneSnapshot(IntPtr.Zero, 0, "Unknown", "No Active Window", Array.Empty<UiControlCandidate>());
+                GetWindowThreadProcessId(hwnd, out uint fgPid);
+                if (!targetPid.HasValue) pid = (int)fgPid;
             }
 
-            GetWindowThreadProcessId(hwnd, out uint pid);
-            string processName = "Unknown";
             try
             {
-                using var proc = Process.GetProcessById((int)pid);
-                processName = proc.ProcessName;
+                if (pid > 0)
+                {
+                    using var proc = Process.GetProcessById(pid);
+                    processName = proc.ProcessName;
+                    if (targetPid.HasValue && proc.MainWindowHandle != IntPtr.Zero)
+                    {
+                        hwnd = proc.MainWindowHandle;
+                    }
+                }
             }
             catch { }
+
+            if (hwnd == IntPtr.Zero)
+            {
+                return new AXSnapshot(pid, processName, "No Active Window", [], false, readSeconds: sw.Elapsed.TotalSeconds);
+            }
 
             AutomationElement? rootElement = null;
             try
@@ -52,141 +98,191 @@ public sealed class UiaReader : IUiaReader
             }
             catch
             {
-                return new UiSceneSnapshot(hwnd, (int)pid, processName, "Unavailable", Array.Empty<UiControlCandidate>());
+                return new AXSnapshot(pid, processName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd);
             }
 
             if (rootElement == null)
             {
-                return new UiSceneSnapshot(hwnd, (int)pid, processName, "Unavailable", Array.Empty<UiControlCandidate>());
+                return new AXSnapshot(pid, processName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd);
             }
 
-            string windowTitle = rootElement.Name ?? processName;
-            bool isSensitiveWindow = windowTitle.Contains(".env", StringComparison.OrdinalIgnoreCase);
+            string windowTitle = "";
+            try { windowTitle = rootElement.Name ?? processName; } catch { windowTitle = processName; }
 
-            var candidates = new List<UiControlCandidate>();
-            var queue = new Queue<AutomationElement>();
-            queue.Enqueue(rootElement);
+            var nodes = new List<AXNode>();
+            var handles = new List<object?>();
+            var queue = new Queue<(AutomationElement Element, int? ParentIndex, int Depth)>();
+            queue.Enqueue((rootElement, null, 0));
 
-            int visited = 0;
-            int candidateIndex = 0;
+            var coverageGaps = new List<AXCoverageGap>();
+            var maxTimeMs = seconds * 1000;
 
-            while (queue.Count > 0 && visited < maxNodes)
+            while (queue.Count > 0 && nodes.Count < maxNodes)
             {
                 ct.ThrowIfCancellationRequested();
-                var current = queue.Dequeue();
-                visited++;
+                if (sw.ElapsedMilliseconds > maxTimeMs)
+                {
+                    coverageGaps.Add(new AXCoverageGap(nodes.Count, AXCoverageReason.Budget));
+                    break;
+                }
+
+                var (element, parentIndex, depth) = queue.Dequeue();
 
                 try
                 {
-                    // Basic visibility and bounding check
-                    var bounds = current.BoundingRectangle;
-                    if (bounds.IsEmpty || bounds.Width <= 1 || bounds.Height <= 1)
+                    var rect = Rectangle.Empty;
+                    try
                     {
-                        // Some offscreen elements still contain visible children; continue traversal
-                        EnqueueChildren(current, queue);
-                        continue;
+                        var b = element.BoundingRectangle;
+                        if (!b.IsEmpty) rect = new Rectangle((int)b.Left, (int)b.Top, (int)b.Width, (int)b.Height);
                     }
+                    catch { }
 
-                    var controlType = current.ControlType;
-                    string name = current.Name ?? string.Empty;
-                    string help = current.HelpText ?? string.Empty;
-                    bool isEnabled = current.IsEnabled;
+                    var controlType = ControlType.Custom;
+                    try { controlType = element.ControlType; } catch { }
 
-                    if (isEnabled && IsInteractive(controlType, name, current))
+                    string role = MapRole(controlType);
+                    string label = "";
+                    try { label = element.Name ?? ""; } catch { }
+
+                    string value = "";
+                    try
                     {
-                        string op = DetermineOperation(controlType);
-                        string id = $"n{candidateIndex}_{op}";
-
-                        if (isSensitiveWindow && (controlType == ControlType.Edit || controlType == ControlType.Document))
+                        if (element.Patterns.Value.IsSupported)
                         {
-                            name = "[REDACTED SENSITIVE EDITOR]";
+                            value = element.Patterns.Value.Pattern.Value.Value ?? "";
                         }
-
-                        var candidate = new UiControlCandidate(
-                            Id: id,
-                            Name: string.IsNullOrWhiteSpace(name) ? controlType.ToString() : name,
-                            Role: controlType.ToString(),
-                            Help: help,
-                            BoundingBox: new Rectangle((int)bounds.Left, (int)bounds.Top, (int)bounds.Width, (int)bounds.Height),
-                            SupportedOperation: op,
-                            NativeElement: current
-                        );
-
-                        candidates.Add(candidate);
-                        candidateIndex++;
+                        else if (element.Patterns.RangeValue.IsSupported)
+                        {
+                            value = element.Patterns.RangeValue.Pattern.Value.Value.ToString();
+                        }
                     }
+                    catch { }
 
-                    EnqueueChildren(current, queue);
+                    var actions = new List<string>();
+                    try
+                    {
+                        if (element.Patterns.Invoke.IsSupported) actions.Add("AXPress");
+                        if (element.Patterns.ExpandCollapse.IsSupported) actions.Add("AXShowMenu");
+                        if (element.Patterns.RangeValue.IsSupported)
+                        {
+                            actions.Add("AXIncrement");
+                            actions.Add("AXDecrement");
+                        }
+                    }
+                    catch { }
+
+                    bool isEnabled = true;
+                    try { isEnabled = element.IsEnabled; } catch { }
+
+                    bool isFocused = false;
+                    try { isFocused = element.Properties.HasKeyboardFocus.ValueOrDefault; } catch { }
+
+                    bool isSelected = false;
+                    try
+                    {
+                        if (element.Patterns.SelectionItem.IsSupported)
+                        {
+                            isSelected = element.Patterns.SelectionItem.Pattern.IsSelected.Value;
+                        }
+                    }
+                    catch { }
+
+                    double? min = null, max = null;
+                    try
+                    {
+                        if (element.Patterns.RangeValue.IsSupported)
+                        {
+                            min = element.Patterns.RangeValue.Pattern.Minimum.Value;
+                            max = element.Patterns.RangeValue.Pattern.Maximum.Value;
+                        }
+                    }
+                    catch { }
+
+                    string help = "";
+                    try { help = element.HelpText ?? ""; } catch { }
+
+                    var nodeIndex = nodes.Count;
+                    var node = new AXNode
+                    {
+                        Id = nodeIndex,
+                        Parent = parentIndex,
+                        Depth = depth,
+                        Role = role,
+                        Subrole = "",
+                        Label = label,
+                        Value = value,
+                        Actions = actions,
+                        Enabled = isEnabled,
+                        Frame = rect,
+                        Help = help,
+                        Focused = isFocused,
+                        Selected = isSelected,
+                        Minimum = min,
+                        Maximum = max,
+                        Visible = rect.Width > 0 && rect.Height > 0,
+                        NativeElement = element
+                    };
+
+                    nodes.Add(node);
+                    handles.Add(element);
+
+                    // Enqueue children
+                    try
+                    {
+                        var children = element.FindAllChildren();
+                        foreach (var child in children)
+                        {
+                            queue.Enqueue((child, nodeIndex, depth + 1));
+                        }
+                    }
+                    catch { }
                 }
-                catch
-                {
-                    // Stale or protected elements are safely skipped
-                }
+                catch { }
             }
 
-            return new UiSceneSnapshot(hwnd, (int)pid, processName, windowTitle, candidates);
+            bool partial = queue.Count > 0 || nodes.Count >= maxNodes;
+            return new AXSnapshot(
+                pid,
+                processName,
+                windowTitle,
+                nodes,
+                partial,
+                handles,
+                readSeconds: sw.Elapsed.TotalSeconds,
+                windowHandle: hwnd,
+                bundleID: processName,
+                coverage: coverageGaps
+            );
         }, ct);
     }
 
-    private static void EnqueueChildren(AutomationElement parent, Queue<AutomationElement> queue)
+    private static string MapRole(ControlType type)
     {
-        try
-        {
-            var children = parent.FindAllChildren();
-            foreach (var child in children)
-            {
-                queue.Enqueue(child);
-            }
-        }
-        catch { }
-    }
-
-    private static bool IsInteractive(ControlType controlType, string name, AutomationElement element)
-    {
-        // Explicitly interactive control types
-        if (controlType == ControlType.Button ||
-            controlType == ControlType.SplitButton ||
-            controlType == ControlType.Edit ||
-            controlType == ControlType.Document ||
-            controlType == ControlType.CheckBox ||
-            controlType == ControlType.RadioButton ||
-            controlType == ControlType.MenuItem ||
-            controlType == ControlType.TabItem ||
-            controlType == ControlType.ListItem ||
-            controlType == ControlType.TreeItem ||
-            controlType == ControlType.ComboBox ||
-            controlType == ControlType.Hyperlink ||
-            controlType == ControlType.Slider)
-        {
-            return true;
-        }
-
-        // Custom or Group controls with invoke patterns or names
-        if ((controlType == ControlType.Custom || controlType == ControlType.Pane) &&
-            !string.IsNullOrWhiteSpace(name) &&
-            element.Patterns.Invoke.IsSupported)
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static string DetermineOperation(ControlType controlType)
-    {
-        if (controlType == ControlType.Edit || controlType == ControlType.Document)
-            return "typeText";
-
-        if (controlType == ControlType.Slider)
-            return "setNumber";
-
-        if (controlType == ControlType.ComboBox ||
-            controlType == ControlType.TabItem ||
-            controlType == ControlType.ListItem ||
-            controlType == ControlType.TreeItem)
-            return "select";
-
-        return "pressClick";
+        if (type == ControlType.Button || type == ControlType.SplitButton) return "AXButton";
+        if (type == ControlType.Edit) return "AXTextField";
+        if (type == ControlType.Document) return "AXWebArea";
+        if (type == ControlType.CheckBox) return "AXCheckBox";
+        if (type == ControlType.RadioButton) return "AXRadioButton";
+        if (type == ControlType.MenuItem) return "AXMenuItem";
+        if (type == ControlType.Menu || type == ControlType.MenuBar) return "AXMenuBar";
+        if (type == ControlType.TabItem) return "AXTabItem";
+        if (type == ControlType.Tab) return "AXTabGroup";
+        if (type == ControlType.List) return "AXList";
+        if (type == ControlType.ListItem) return "AXRow";
+        if (type == ControlType.Table || type == ControlType.DataGrid) return "AXTable";
+        if (type == ControlType.Tree) return "AXOutline";
+        if (type == ControlType.TreeItem) return "AXRow";
+        if (type == ControlType.ComboBox) return "AXComboBox";
+        if (type == ControlType.Hyperlink) return "AXLink";
+        if (type == ControlType.Slider) return "AXSlider";
+        if (type == ControlType.Spinner) return "AXIncrementor";
+        if (type == ControlType.ToolBar) return "AXToolbar";
+        if (type == ControlType.Window) return "AXWindow";
+        if (type == ControlType.Text) return "AXStaticText";
+        if (type == ControlType.Header || type == ControlType.TitleBar) return "AXHeading";
+        if (type == ControlType.ScrollBar) return "AXScrollArea";
+        return "AXGroup";
     }
 
     public void Dispose()

@@ -2,8 +2,8 @@ using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using WiraVoice.Core.Commands;
 using WiraVoice.Core.Config;
-using WiraVoice.Core.Orchestration;
 using WiraVoice.Core.Speech;
 
 namespace WiraVoice.UI;
@@ -65,14 +65,19 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         _coordinator = coordinator;
         _router = router;
 
-        _coordinator.OnStatusChanged += status =>
+        _coordinator.OnStatus = (status, isBusy) =>
         {
-            App.Current.Dispatcher.Invoke(() => Status = status);
+            App.Current?.Dispatcher?.Invoke(() => Status = status);
         };
 
-        _coordinator.OnTranscript += (text, isFinal, turnId) =>
+        _coordinator.OnTurnFinished = result =>
         {
-            App.Current.Dispatcher.Invoke(() =>
+            App.Current?.Dispatcher?.Invoke(() => Status = result.Status);
+        };
+
+        _router.OnTranscript += (text, isFinal, turnId) =>
+        {
+            App.Current?.Dispatcher?.Invoke(() =>
             {
                 if (!string.IsNullOrWhiteSpace(text))
                 {
@@ -83,7 +88,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
 
         _router.OnAudioLevel += level =>
         {
-            App.Current.Dispatcher.Invoke(() => AudioLevel = level);
+            App.Current?.Dispatcher?.Invoke(() => AudioLevel = level);
         };
     }
 
@@ -91,7 +96,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
     {
         if (IsListening)
         {
-            await _coordinator.StopAsync();
+            await _coordinator.StopSpeechAsync();
             IsListening = false;
             Status = "Stopped";
             AudioLevel = 0.0;
@@ -99,7 +104,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         else
         {
             Status = "Starting...";
-            await _coordinator.StartAsync();
+            await _coordinator.StartSpeechAsync();
             IsListening = true;
             Status = "Listening…";
         }
