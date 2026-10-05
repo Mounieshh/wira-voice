@@ -94,4 +94,29 @@ public class TopBarViewModelTests
         Assert.True(vm.IsCloudMode);
         Assert.Contains("Cloud", vm.EngineModeDisplay);
     }
+
+    [Fact]
+    public async Task ToggleListening_WhenRouterFailsToListen_DoesNotSetIsListeningTrue()
+    {
+        EnvironmentConfig.Initialize();
+        var audio = new WiraVoice.Core.Audio.AudioCaptureService();
+        var cloud = new DeepgramFluxEngine(audio);
+        var local = new WhisperLocalEngine(audio);
+        // Start in Cloud mode where Deepgram key is missing
+        var router = new SpeechEngineRouter(cloud, local, SpeechEngineMode.CloudDeepgram);
+        var selector = new WiraVoice.Core.Language.JevSelector("dummy", "jev-1.13.0");
+        var engine = new WiraVoice.Core.Commands.CommandEngine(selector);
+        var coordinator = new WiraVoice.Core.Commands.CommandCoordinator(engine, speechEngine: router);
+
+        var vm = new TopBarViewModel(coordinator, router)
+        {
+            EngineMode = SpeechEngineMode.CloudDeepgram
+        };
+
+        await vm.ToggleListeningAsync();
+
+        // Either it automatically switched to Local Whisper and succeeded, or if audio capture cannot start, it stays IsListening=false
+        // Crucially: It MUST NOT claim IsListening=true if router is NOT listening!
+        Assert.Equal(router.IsListening, vm.IsListening);
+    }
 }

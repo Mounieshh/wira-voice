@@ -147,6 +147,11 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
 
         if (_router != null)
         {
+            _router.OnStatusChanged += status =>
+            {
+                SafeDispatch(() => Status = status);
+            };
+
             _router.OnTranscript += (text, isFinal, turnId) =>
             {
                 SafeDispatch(() =>
@@ -206,11 +211,42 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         else
         {
             Status = "Starting...";
-            if (_coordinator != null)
-                await _coordinator.StartSpeechAsync();
+            try
+            {
+                if (_coordinator != null)
+                {
+                    await _coordinator.StartSpeechAsync();
+                }
 
-            IsListening = true;
-            Status = "Listening…";
+                // Check if active engine actually started listening
+                if (_router != null && !_router.IsListening)
+                {
+                    // Automatic fallback: If cloud Deepgram key is missing, switch to local Whisper
+                    if (EngineMode == SpeechEngineMode.CloudDeepgram && string.IsNullOrWhiteSpace(EnvironmentConfig.DeepgramApiKey))
+                    {
+                        Status = "Cloud key missing; falling back to Local Whisper…";
+                        await SetEngineModeAsync(SpeechEngineMode.LocalWhisper);
+                        if (_coordinator != null)
+                        {
+                            await _coordinator.StartSpeechAsync();
+                        }
+                    }
+
+                    if (!_router.IsListening)
+                    {
+                        IsListening = false;
+                        return;
+                    }
+                }
+
+                IsListening = true;
+                Status = "Listening…";
+            }
+            catch (Exception ex)
+            {
+                IsListening = false;
+                Status = $"Error: {ex.Message}";
+            }
         }
     }
 

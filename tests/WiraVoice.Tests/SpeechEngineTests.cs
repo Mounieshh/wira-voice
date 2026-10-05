@@ -86,4 +86,19 @@ public class SpeechEngineTests
         Assert.Equal(SpeechTurnType.StartOfTurn, received.Type);
         Assert.Equal("turn_42", received.TurnId);
     }
+
+    [Fact]
+    public async Task WhisperLocalEngine_CanStartWithLocalModel()
+    {
+        EnvironmentConfig.Initialize();
+        var fullModelPath = System.IO.Path.GetFullPath(@"..\..\..\..\models\ggml-base.bin");
+        Environment.SetEnvironmentVariable("WHISPER_MODEL_PATH", fullModelPath);
+        var audio = new WiraVoice.Core.Audio.AudioCaptureService();
+        var engine = new WhisperLocalEngine(audio);
+        string? status = null;
+        engine.OnStatusChanged += s => status = s;
+        await engine.StartAsync();
+        Assert.True(engine.IsListening, status ?? "No status");
+        await engine.StopAsync();
+    }
 }

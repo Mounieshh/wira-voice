@@ -37,10 +37,14 @@ public partial class FloatingTopBar : Window
         // 1. Initialize Core Pipeline
         EnvironmentConfig.Initialize();
 
+        var defaultMode = !string.IsNullOrWhiteSpace(EnvironmentConfig.DeepgramApiKey)
+            ? SpeechEngineMode.CloudDeepgram
+            : SpeechEngineMode.LocalWhisper;
+
         var audio = new AudioCaptureService();
         var cloud = new DeepgramFluxEngine(audio);
         var local = new WhisperLocalEngine(audio);
-        var router = new SpeechEngineRouter(cloud, local);
+        var router = new SpeechEngineRouter(cloud, local, defaultMode);
 
         var apiKey = EnvironmentConfig.TypeSafeApiKey;
         if (string.IsNullOrEmpty(apiKey)) apiKey = EnvironmentConfig.OpenRouterApiKey;
@@ -53,7 +57,10 @@ public partial class FloatingTopBar : Window
         var engine = new CommandEngine(jevSelector);
 
         _coordinator = new CommandCoordinator(engine, speechEngine: router);
-        _viewModel = new TopBarViewModel(_coordinator, router);
+        _viewModel = new TopBarViewModel(_coordinator, router)
+        {
+            EngineMode = defaultMode
+        };
         DataContext = _viewModel;
 
         // 2. Set up smooth 30 FPS waveform animation timer
@@ -162,6 +169,10 @@ public partial class FloatingTopBar : Window
     {
         base.OnClosed(e);
         _animationTimer.Stop();
-        await _coordinator.DisposeAsync();
+        if (_coordinator != null)
+        {
+            await _coordinator.DisposeAsync();
+        }
+        Application.Current?.Shutdown(0);
     }
 }

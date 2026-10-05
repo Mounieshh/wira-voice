@@ -50,17 +50,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         string modelPath = EnvironmentConfig.WhisperModelPath;
         if (!File.Exists(modelPath))
         {
-            // Check relative to AppDomain base
-            string relativePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, modelPath);
-            if (File.Exists(relativePath))
-            {
-                modelPath = relativePath;
-            }
-            else
-            {
-                OnStatusChanged?.Invoke($"Whisper model not found at {modelPath}");
-                return;
-            }
+            modelPath = ResolvePath(modelPath) ?? modelPath;
+        }
+
+        if (!File.Exists(modelPath))
+        {
+            OnStatusChanged?.Invoke($"Whisper model not found at {modelPath}");
+            return;
         }
 
         try
@@ -84,8 +80,9 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         catch (Exception ex)
         {
             _isListening = false;
-            OnStatusChanged?.Invoke($"Whisper initialization failed: {ex.Message}");
+            var errMsg = $"Whisper initialization failed: {ex.Message}";
             await StopAsync();
+            OnStatusChanged?.Invoke(errMsg);
         }
     }
 
@@ -201,6 +198,33 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         OnStatusChanged?.Invoke("Ready");
         OnAudioLevel?.Invoke(0.0);
         return Task.CompletedTask;
+    }
+
+    public static string? ResolvePath(string relativeOrFileName)
+    {
+        if (File.Exists(relativeOrFileName)) return Path.GetFullPath(relativeOrFileName);
+
+        var dirsToTry = new[]
+        {
+            AppDomain.CurrentDomain.BaseDirectory,
+            Directory.GetCurrentDirectory()
+        };
+
+        foreach (var startDir in dirsToTry)
+        {
+            var dir = new DirectoryInfo(startDir);
+            while (dir != null)
+            {
+                string candidate = Path.Combine(dir.FullName, relativeOrFileName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+                dir = dir.Parent;
+            }
+        }
+
+        return null;
     }
 
     public async ValueTask DisposeAsync()
