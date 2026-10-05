@@ -7,6 +7,29 @@
 # AI Agents and Workspaces
 .agents/
 .gemini/
+skills-lock.json
+
+# Scratch directories, task traces, and local ticket copies
+.scratch/
+scratch/
+tmp/
+temp/
+
+# Large Model Weights (do not commit model binaries)
+models/
+*.bin
+*.onnx
+*.gguf
+
+# Pre-compiled Whisper Native Binaries & CUDA DLLs
+whisper-bin/
+Release/
+
+# Cloned Upstream Reference Repositories
+computah/
+
+# Scratch Documentation (Keeping .github/ fully tracked)
+docs/
 
 # Build Outputs & Binaries (.NET / C#)
 bin/
@@ -19,12 +42,7 @@ obj/
 *.userosscache
 *.sln.docstates
 .vs/
-
-# Whisper Models & Large Binaries (do not commit model weights)
-models/
-*.bin
-*.onnx
-*.gguf
+.vscode/
 
 # Logs, Diagnostics & Output Traces
 logs/
@@ -32,23 +50,9 @@ outputs/
 *.log
 diagnostics/
 
-# IDE & Editors
-.vscode/
-.idea/
-*.swp
-*~
-
 # Operating System Files
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
-
-# Temporary / Scratch
-tmp/
-temp/
-scratch/
-skills-lock.json
-
-computah/
