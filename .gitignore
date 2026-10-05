@@ -1,0 +1,52 @@
+# Environment and Secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# AI Agents and Workspaces
+.agents/
+.gemini/
+
+# Build Outputs & Binaries (.NET / C#)
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Whisper Models & Large Binaries (do not commit model weights)
+models/
+*.bin
+*.onnx
+*.gguf
+
+# Logs, Diagnostics & Output Traces
+logs/
+outputs/
+*.log
+diagnostics/
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Operating System Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Temporary / Scratch
+tmp/
+temp/
+scratch/
+skills-lock.json
