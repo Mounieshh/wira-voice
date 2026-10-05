@@ -1,8 +1,11 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using WiraVoice.Core.Audio;
 using WiraVoice.Core.Commands;
 using WiraVoice.Core.Config;
@@ -24,16 +27,14 @@ public partial class FloatingTopBar : Window
 
     private readonly TopBarViewModel _viewModel;
     private readonly CommandCoordinator _coordinator;
+    private readonly DispatcherTimer _animationTimer;
+    private bool _userMoved = false;
 
     public FloatingTopBar()
     {
         InitializeComponent();
 
-        // 1. Position top-center of primary screen
-        Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
-        Top = 18;
-
-        // 2. Initialize Core Pipeline
+        // 1. Initialize Core Pipeline
         EnvironmentConfig.Initialize();
 
         var audio = new AudioCaptureService();
@@ -54,13 +55,34 @@ public partial class FloatingTopBar : Window
         _coordinator = new CommandCoordinator(engine, speechEngine: router);
         _viewModel = new TopBarViewModel(_coordinator, router);
         DataContext = _viewModel;
+
+        // 2. Set up smooth 30 FPS waveform animation timer
+        _animationTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromMilliseconds(33)
+        };
+        _animationTimer.Tick += (s, e) => _viewModel.UpdateWaveformTick(0.033);
+        _animationTimer.Start();
+
+        // 3. Center notch at top of screen
+        Loaded += (s, e) => CenterOnScreen();
+        SizeChanged += (s, e) => CenterOnScreen();
+    }
+
+    private void CenterOnScreen()
+    {
+        if (_userMoved) return;
+
+        var screenWidth = SystemParameters.PrimaryScreenWidth;
+        Left = (screenWidth - ActualWidth) / 2;
+        Top = 14;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
 
-        // Ensure window never steals focus from the user's active window
+        // Ensure window never steals focus from active applications
         var helper = new WindowInteropHelper(this);
         int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
         SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE);
@@ -70,13 +92,19 @@ public partial class FloatingTopBar : Window
     {
         if (e.LeftButton == MouseButtonState.Pressed)
         {
+            _userMoved = true;
             DragMove();
         }
     }
 
-    private async void OnToggleEngineModeClicked(object sender, RoutedEventArgs e)
+    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
     {
-        await _viewModel.ToggleEngineModeAsync();
+        base.OnMouseRightButtonUp(e);
+        if (MoreButton.ContextMenu != null)
+        {
+            MoreButton.ContextMenu.PlacementTarget = this;
+            MoreButton.ContextMenu.IsOpen = true;
+        }
     }
 
     private async void OnToggleListeningClicked(object sender, RoutedEventArgs e)
@@ -84,9 +112,56 @@ public partial class FloatingTopBar : Window
         await _viewModel.ToggleListeningAsync();
     }
 
+    private void OnMoreOptionsClicked(object sender, RoutedEventArgs e)
+    {
+        if (MoreButton.ContextMenu != null)
+        {
+            MoreButton.ContextMenu.PlacementTarget = MoreButton;
+            MoreButton.ContextMenu.IsOpen = true;
+        }
+    }
+
+    private async void OnSelectCloudEngineClicked(object sender, RoutedEventArgs e)
+    {
+        await _viewModel.SetEngineModeAsync(SpeechEngineMode.CloudDeepgram);
+    }
+
+    private async void OnSelectLocalEngineClicked(object sender, RoutedEventArgs e)
+    {
+        await _viewModel.SetEngineModeAsync(SpeechEngineMode.LocalWhisper);
+    }
+
+    private void OnClearTranscriptClicked(object sender, RoutedEventArgs e)
+    {
+        _viewModel.ClearTranscript();
+    }
+
+    private void OnOpenDiagnosticsClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var tempHtml = Path.Combine(Path.GetTempPath(), "architecture-review-20261005.html");
+            if (File.Exists(tempHtml))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = tempHtml,
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch { }
+    }
+
+    private void OnExitClicked(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
     protected override async void OnClosed(EventArgs e)
     {
         base.OnClosed(e);
+        _animationTimer.Stop();
         await _coordinator.DisposeAsync();
     }
 }

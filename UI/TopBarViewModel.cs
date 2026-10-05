@@ -8,16 +8,30 @@ using WiraVoice.Core.Speech;
 
 namespace WiraVoice.UI;
 
+/// <summary>
+/// Presentation model for the compact floating top bar notch UI.
+/// Encapsulates transcript formatting, audio waveform math matching Computah,
+/// and speech engine switching behind a clean, testable seam.
+/// </summary>
 public sealed class TopBarViewModel : INotifyPropertyChanged
 {
-    private readonly CommandCoordinator _coordinator;
-    private readonly SpeechEngineRouter _router;
+    private readonly CommandCoordinator? _coordinator;
+    private readonly SpeechEngineRouter? _router;
 
     private string _status = "Ready";
-    private string _transcript = "Say a command (e.g., 'Click Submit' or 'Type hello')...";
+    private string _transcript = string.Empty;
     private double _audioLevel = 0.0;
+    private double _displayedLevel = 0.0;
     private bool _isListening = false;
     private SpeechEngineMode _engineMode = SpeechEngineMode.CloudDeepgram;
+
+    // Resting baseline heights matching Computah: [7, 15, 20, 10]
+    private double _bar0Height = 6.0;
+    private double _bar1Height = 13.0;
+    private double _bar2Height = 17.0;
+    private double _bar3Height = 9.0;
+
+    private readonly DateTime _startTime = DateTime.UtcNow;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -30,20 +44,47 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
     public string Transcript
     {
         get => _transcript;
-        set { _transcript = value; OnPropertyChanged(); }
+        set
+        {
+            _transcript = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DisplayText));
+            OnPropertyChanged(nameof(IsPlaceholder));
+        }
     }
+
+    public string DisplayText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_transcript))
+                return _transcript;
+
+            return _isListening ? "Go ahead, I'm listening…" : "Say a command or click to listen…";
+        }
+    }
+
+    public bool IsPlaceholder => string.IsNullOrWhiteSpace(_transcript);
 
     public double AudioLevel
     {
         get => _audioLevel;
-        set { _audioLevel = value; OnPropertyChanged(); }
+        set { _audioLevel = Math.Clamp(value, 0.0, 1.0); OnPropertyChanged(); }
     }
 
     public bool IsListening
     {
         get => _isListening;
-        set { _isListening = value; OnPropertyChanged(); }
+        set
+        {
+            _isListening = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DisplayText));
+            OnPropertyChanged(nameof(ListenButtonTooltip));
+        }
     }
+
+    public string ListenButtonTooltip => _isListening ? "Stop listening" : "Start listening";
 
     public SpeechEngineMode EngineMode
     {
@@ -54,57 +95,120 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(EngineModeDisplay));
             OnPropertyChanged(nameof(IsCloudMode));
+            OnPropertyChanged(nameof(IsLocalMode));
         }
     }
 
-    public string EngineModeDisplay => EngineMode == SpeechEngineMode.CloudDeepgram ? "Cloud (Deepgram)" : "Local (Whisper)";
+    public string EngineModeDisplay => EngineMode == SpeechEngineMode.CloudDeepgram ? "Cloud (Deepgram Flux)" : "Local (Whisper.cpp)";
     public bool IsCloudMode => EngineMode == SpeechEngineMode.CloudDeepgram;
+    public bool IsLocalMode => EngineMode == SpeechEngineMode.LocalWhisper;
 
-    public TopBarViewModel(CommandCoordinator coordinator, SpeechEngineRouter router)
+    public double Bar0Height
+    {
+        get => _bar0Height;
+        private set { _bar0Height = value; OnPropertyChanged(); }
+    }
+
+    public double Bar1Height
+    {
+        get => _bar1Height;
+        private set { _bar1Height = value; OnPropertyChanged(); }
+    }
+
+    public double Bar2Height
+    {
+        get => _bar2Height;
+        private set { _bar2Height = value; OnPropertyChanged(); }
+    }
+
+    public double Bar3Height
+    {
+        get => _bar3Height;
+        private set { _bar3Height = value; OnPropertyChanged(); }
+    }
+
+    public TopBarViewModel(CommandCoordinator? coordinator = null, SpeechEngineRouter? router = null)
     {
         _coordinator = coordinator;
         _router = router;
 
-        _coordinator.OnStatus = (status, isBusy) =>
+        if (_coordinator != null)
         {
-            App.Current?.Dispatcher?.Invoke(() => Status = status);
-        };
-
-        _coordinator.OnTurnFinished = result =>
-        {
-            App.Current?.Dispatcher?.Invoke(() => Status = result.Status);
-        };
-
-        _router.OnTranscript += (text, isFinal, turnId) =>
-        {
-            App.Current?.Dispatcher?.Invoke(() =>
+            _coordinator.OnStatus = (status, isBusy) =>
             {
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    Transcript = text;
-                }
-            });
-        };
+                SafeDispatch(() => Status = status);
+            };
 
-        _router.OnAudioLevel += level =>
+            _coordinator.OnTurnFinished = result =>
+            {
+                SafeDispatch(() => Status = result.Status);
+            };
+        }
+
+        if (_router != null)
         {
-            App.Current?.Dispatcher?.Invoke(() => AudioLevel = level);
-        };
+            _router.OnTranscript += (text, isFinal, turnId) =>
+            {
+                SafeDispatch(() =>
+                {
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        Transcript = text;
+                    }
+                });
+            };
+
+            _router.OnAudioLevel += level =>
+            {
+                SafeDispatch(() => AudioLevel = level);
+            };
+        }
+    }
+
+    /// <summary>
+    /// Smoothly updates the 4 audio visualizer waveform bars matching Computah's exact formula.
+    /// </summary>
+    public void UpdateWaveformTick(double elapsedSeconds = 0.033)
+    {
+        double rate = _audioLevel > _displayedLevel ? 20.0 : 7.0;
+        _displayedLevel += (_audioLevel - _displayedLevel) * Math.Min(1.0, elapsedSeconds * rate);
+
+        if (_isListening)
+        {
+            double phase = (DateTime.UtcNow - _startTime).TotalSeconds * 4.0;
+            Bar0Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 0 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
+            Bar1Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 1 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
+            Bar2Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 2 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
+            Bar3Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 3 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
+        }
+        else
+        {
+            // Resting state heights
+            Bar0Height = 6.0;
+            Bar1Height = 13.0;
+            Bar2Height = 17.0;
+            Bar3Height = 9.0;
+        }
     }
 
     public async Task ToggleListeningAsync()
     {
         if (IsListening)
         {
-            await _coordinator.StopSpeechAsync();
+            if (_coordinator != null)
+                await _coordinator.StopSpeechAsync();
+
             IsListening = false;
             Status = "Stopped";
             AudioLevel = 0.0;
+            _displayedLevel = 0.0;
         }
         else
         {
             Status = "Starting...";
-            await _coordinator.StartSpeechAsync();
+            if (_coordinator != null)
+                await _coordinator.StartSpeechAsync();
+
             IsListening = true;
             Status = "Listening…";
         }
@@ -116,8 +220,38 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
             ? SpeechEngineMode.LocalWhisper
             : SpeechEngineMode.CloudDeepgram;
 
-        await _router.SwitchModeAsync(newMode);
-        EngineMode = newMode;
+        await SetEngineModeAsync(newMode);
+    }
+
+    public async Task SetEngineModeAsync(SpeechEngineMode mode)
+    {
+        if (EngineMode == mode) return;
+
+        if (_router != null)
+        {
+            await _router.SwitchModeAsync(mode);
+        }
+
+        EngineMode = mode;
+    }
+
+    public void ClearTranscript()
+    {
+        Transcript = string.Empty;
+        Status = "Ready";
+    }
+
+    private static void SafeDispatch(Action action)
+    {
+        var app = App.Current;
+        if (app?.Dispatcher != null && !app.Dispatcher.CheckAccess())
+        {
+            app.Dispatcher.Invoke(action);
+        }
+        else
+        {
+            action();
+        }
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
