@@ -175,20 +175,33 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
     /// </summary>
     public void UpdateWaveformTick(double elapsedSeconds = 0.033)
     {
-        double rate = _audioLevel > _displayedLevel ? 20.0 : 7.0;
+        double rate = _audioLevel > _displayedLevel ? 25.0 : 8.0;
         _displayedLevel += (_audioLevel - _displayedLevel) * Math.Min(1.0, elapsedSeconds * rate);
 
         if (_isListening)
         {
-            double phase = (DateTime.UtcNow - _startTime).TotalSeconds * 4.0;
-            Bar0Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 0 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
-            Bar1Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 1 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
-            Bar2Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 2 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
-            Bar3Height = Math.Clamp(4.0 + _displayedLevel * (12.0 + (Math.Sin(phase + 3 * 1.2) + 1.0) * 6.0), 4.0, 22.0);
+            double phase = (DateTime.UtcNow - _startTime).TotalSeconds * 5.0;
+            double boost = Math.Max(0.0, _displayedLevel);
+            if (boost > 0.015)
+            {
+                // Active voice speaking: lively dynamic equalizer
+                Bar0Height = Math.Clamp(4.0 + boost * (11.0 + (Math.Sin(phase + 0 * 1.3) + 1.0) * 6.0), 3.5, 22.0);
+                Bar1Height = Math.Clamp(4.0 + boost * (12.0 + (Math.Sin(phase + 1 * 1.3) + 1.0) * 7.0), 3.5, 22.0);
+                Bar2Height = Math.Clamp(4.0 + boost * (13.0 + (Math.Sin(phase + 2 * 1.3) + 1.0) * 7.0), 3.5, 22.0);
+                Bar3Height = Math.Clamp(4.0 + boost * (10.0 + (Math.Sin(phase + 3 * 1.3) + 1.0) * 6.0), 3.5, 22.0);
+            }
+            else
+            {
+                // Subtle ambient pulse while listening so user knows mic is on
+                Bar0Height = 5.0 + Math.Sin(phase + 0 * 0.9) * 1.5;
+                Bar1Height = 8.0 + Math.Sin(phase + 1 * 0.9) * 2.0;
+                Bar2Height = 11.0 + Math.Sin(phase + 2 * 0.9) * 2.0;
+                Bar3Height = 6.0 + Math.Sin(phase + 3 * 0.9) * 1.5;
+            }
         }
         else
         {
-            // Resting state heights
+            // Resting state heights when stopped
             Bar0Height = 6.0;
             Bar1Height = 13.0;
             Bar2Height = 17.0;

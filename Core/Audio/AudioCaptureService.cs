@@ -96,35 +96,51 @@ public sealed class AudioCaptureService : IDisposable
         }
     }
 
-    private static double CalculateLevel(byte[] buffer, int count, WaveFormat? format)
+    public static double CalculateLevel(byte[] buffer, int count, WaveFormat? format)
     {
         if (count == 0 || format == null) return 0.0;
 
         double sum = 0;
         int sampleCount = 0;
 
-        if (format.Encoding == WaveFormatEncoding.IeeeFloat)
+        // 32-bit IEEE float (handles standard IeeeFloat and WASAPI WaveFormatExtensible)
+        if (format.BitsPerSample == 32)
         {
-            for (int i = 0; i < count - 4; i += 4 * format.Channels)
+            for (int i = 0; i <= count - 4; i += 4 * format.Channels)
             {
                 float sample = BitConverter.ToSingle(buffer, i);
-                sum += Math.Abs(sample);
-                sampleCount++;
+                if (!float.IsNaN(sample) && !float.IsInfinity(sample))
+                {
+                    sum += Math.Abs(sample);
+                    sampleCount++;
+                }
             }
         }
         else if (format.BitsPerSample == 16)
         {
-            for (int i = 0; i < count - 2; i += 2 * format.Channels)
+            // 16-bit signed PCM
+            for (int i = 0; i <= count - 2; i += 2 * format.Channels)
             {
                 short sample = BitConverter.ToInt16(buffer, i);
                 sum += Math.Abs(sample) / 32768.0;
                 sampleCount++;
             }
         }
+        else if (format.BitsPerSample == 24)
+        {
+            // 24-bit PCM
+            for (int i = 0; i <= count - 3; i += 3 * format.Channels)
+            {
+                int sample = (buffer[i + 2] << 16) | (buffer[i + 1] << 8) | buffer[i];
+                if ((sample & 0x800000) != 0) sample |= unchecked((int)0xFF000000);
+                sum += Math.Abs(sample) / 8388608.0;
+                sampleCount++;
+            }
+        }
 
         if (sampleCount == 0) return 0.0;
         double avg = sum / sampleCount;
-        return Math.Min(1.0, avg * 5.0); // Boost scale for smooth UI visualization
+        return Math.Clamp(avg * 8.0, 0.0, 1.0); // Boost scale for responsive UI visualization & VAD
     }
 
     private void OnCaptureRecordingStopped(object? sender, StoppedEventArgs e)

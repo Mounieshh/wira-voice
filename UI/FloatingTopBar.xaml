@@ -124,16 +124,16 @@
         </Style>
     </Window.Resources>
 
-    <!-- Main Compact Notch Card -->
-    <Border Height="38"
-            CornerRadius="19"
-            Background="#141416"
-            BorderBrush="#2A2A2E"
+    <!-- Main Boxy Rectangular Card -->
+    <Border Height="40"
+            CornerRadius="8"
+            Background="#121215"
+            BorderBrush="#2C2C32"
             BorderThickness="1"
             VerticalAlignment="Center"
             Margin="6">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="14" ShadowDepth="2" Direction="270" Color="#000000" Opacity="0.45"/>
+            <DropShadowEffect BlurRadius="16" ShadowDepth="3" Direction="270" Color="#000000" Opacity="0.5"/>
         </Border.Effect>
 
         <Grid Margin="12,0,10,0">

@@ -20,6 +20,9 @@ public sealed class WhisperLocalEngine : ISpeechEngine
     private WhisperProcessor? _processor;
     private readonly MemoryStream _audioBuffer = new();
     private readonly object _bufferLock = new();
+    private readonly System.Collections.Generic.Queue<byte[]> _preRollChunks = new();
+    private int _preRollBytes = 0;
+    private const int MaxPreRollBytes = 32000; // 500ms of 16kHz 16-bit mono PCM
     private bool _isListening = false;
     private bool _inSpeech = false;
     private DateTime _lastSpeechTime = DateTime.MinValue;
@@ -92,8 +95,8 @@ public sealed class WhisperLocalEngine : ISpeechEngine
 
         if (!_isListening) return;
 
-        // VAD Speech Start Threshold
-        if (level > 0.08)
+        // VAD Speech Start Threshold (0.025 captures natural speech)
+        if (level > 0.025)
         {
             _lastSpeechTime = DateTime.UtcNow;
 
@@ -106,6 +109,14 @@ public sealed class WhisperLocalEngine : ISpeechEngine
                 lock (_bufferLock)
                 {
                     _audioBuffer.SetLength(0);
+
+                    // Replay pre-roll audio so initial words are completely preserved
+                    while (_preRollChunks.Count > 0)
+                    {
+                        var chunk = _preRollChunks.Dequeue();
+                        _audioBuffer.Write(chunk, 0, chunk.Length);
+                    }
+                    _preRollBytes = 0;
                 }
 
                 OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, _currentTurnId));
@@ -115,11 +126,25 @@ public sealed class WhisperLocalEngine : ISpeechEngine
 
     private void OnAudioChunk(byte[] pcmChunk)
     {
-        if (!_isListening || !_inSpeech) return;
+        if (!_isListening) return;
 
         lock (_bufferLock)
         {
-            _audioBuffer.Write(pcmChunk, 0, pcmChunk.Length);
+            if (_inSpeech)
+            {
+                _audioBuffer.Write(pcmChunk, 0, pcmChunk.Length);
+            }
+            else
+            {
+                // Maintain 500ms rolling pre-roll buffer when silent
+                _preRollChunks.Enqueue(pcmChunk);
+                _preRollBytes += pcmChunk.Length;
+                while (_preRollBytes > MaxPreRollBytes && _preRollChunks.Count > 0)
+                {
+                    var dropped = _preRollChunks.Dequeue();
+                    _preRollBytes -= dropped.Length;
+                }
+            }
         }
     }
 
@@ -129,8 +154,8 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         {
             await Task.Delay(100, ct);
 
-            // Silence duration threshold: 450ms of silence indicates EndOfTurn
-            if (_inSpeech && (DateTime.UtcNow - _lastSpeechTime).TotalMilliseconds > 450)
+            // Silence duration threshold: 550ms of silence indicates EndOfTurn
+            if (_inSpeech && (DateTime.UtcNow - _lastSpeechTime).TotalMilliseconds > 550)
             {
                 _inSpeech = false;
                 await TranscribeBufferedAudioAsync();
@@ -193,6 +218,8 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         lock (_bufferLock)
         {
             _audioBuffer.SetLength(0);
+            _preRollChunks.Clear();
+            _preRollBytes = 0;
         }
 
         OnStatusChanged?.Invoke("Ready");
