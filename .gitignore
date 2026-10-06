@@ -26,8 +26,9 @@ whisper-bin/
 Release/
 
 
-# Scratch Documentation (Keeping .github/ fully tracked)
+# Documentation & Scratch Specifications
 /docs/
+.github/docs/
 
 # Upstream Reference Codebase (kept locally on disk, untracked in git)
 computah/
