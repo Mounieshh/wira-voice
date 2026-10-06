@@ -646,13 +646,13 @@ public partial class CommandEngine
 
         if (prepared.Launch != null)
         {
-            if (!AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.Launch) && fresh.BundleID != prepared.Launch.BundleID) return false;
+            if (!AppRouting.IsSameApp(fresh, prepared.Launch) && !AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.Launch)) return false;
             var answer = await ActivationJudgmentAsync(prepared.Launch.Name, pending.Clause.ModelText(checkpoint.Source), checkpoint.Read().VerificationContext, ct).ConfigureAwait(false);
             verdict = answer.Id ?? "unknown";
         }
         else if (prepared.Navigation != null)
         {
-            if (prepared.NavigationBrowser == null || (!AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.NavigationBrowser) && fresh.BundleID != prepared.NavigationBrowser.BundleID)) return false;
+            if (prepared.NavigationBrowser == null || (!AppRouting.IsSameApp(fresh, prepared.NavigationBrowser) && !AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.NavigationBrowser))) return false;
             var ans = await DestinationJudgmentAsync(prepared.Navigation, fresh, ct).ConfigureAwait(false);
             verdict = ans.Id ?? "unknown";
         }
@@ -711,11 +711,11 @@ public partial class CommandEngine
         {
             var snapshot = await ObserveAfterInputAsync(pid, ct: ct).ConfigureAwait(false);
             current = snapshot;
-            verified = (AppRouting.IsSameApp(snapshot.AppName, snapshot.WindowTitle, browser) || snapshot.BundleID == browser.BundleID) && snapshot.ObservesDestination(url);
+            verified = (AppRouting.IsSameApp(snapshot, browser) || AppRouting.IsSameApp(snapshot?.AppName, snapshot?.WindowTitle, browser)) && (snapshot?.ObservesDestination(url) ?? false);
             if (verified) break;
 
-            var evidence = snapshot.DestinationEvidence;
-            if ((AppRouting.IsSameApp(snapshot.AppName, snapshot.WindowTitle, browser) || snapshot.BundleID == browser.BundleID) && evidence != lastEvidence)
+            var evidence = snapshot?.DestinationEvidence;
+            if (snapshot != null && (AppRouting.IsSameApp(snapshot, browser) || AppRouting.IsSameApp(snapshot.AppName, snapshot.WindowTitle, browser)) && evidence != lastEvidence)
             {
                 lastEvidence = evidence;
                 var answer = await DestinationJudgmentAsync(url, snapshot, ct).ConfigureAwait(false);

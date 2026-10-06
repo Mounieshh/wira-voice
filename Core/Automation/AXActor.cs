@@ -98,51 +98,85 @@ public static class AXActor
                 return $"Dispatched pressClick to {candidate.Description} at ({centerX},{centerY})";
 
             case AXOperation.TypeText:
-                permit.Perform(() =>
+                if (node.NativeElement is AutomationElement typeEl && typeEl.Patterns.Value.IsSupported && !typeEl.Patterns.Value.Pattern.IsReadOnly)
                 {
-                    SendMouseMove(centerX, centerY);
-                    SendMouseClick(centerX, centerY);
-                    Thread.Sleep(50);
-                    if (!string.IsNullOrEmpty(text))
+                    permit.Perform(() =>
                     {
-                        SendUnicodeString(text, permit);
-                    }
-                    if (IsAutoSubmitControl(candidate, node))
+                        typeEl.Patterns.Value.Pattern.SetValue(text ?? "");
+                        if (IsAutoSubmitControl(candidate, node))
+                        {
+                            try { typeEl.Focus(); } catch { }
+                            SendKeyDown(VK_RETURN);
+                            SendKeyUp(VK_RETURN);
+                        }
+                    }, effect: true);
+                    return $"Dispatched typeText \"{text}\" via ValuePattern to {candidate.Description}";
+                }
+                else
+                {
+                    permit.Perform(() =>
                     {
-                        Thread.Sleep(60);
-                        SendKeyDown(VK_RETURN);
-                        SendKeyUp(VK_RETURN);
-                    }
-                }, effect: true);
-                return $"Dispatched typeText \"{text}\" to {candidate.Description}";
+                        SendMouseMove(centerX, centerY);
+                        SendMouseClick(centerX, centerY);
+                        Thread.Sleep(50);
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            SendUnicodeString(text, permit);
+                        }
+                        if (IsAutoSubmitControl(candidate, node))
+                        {
+                            Thread.Sleep(60);
+                            SendKeyDown(VK_RETURN);
+                            SendKeyUp(VK_RETURN);
+                        }
+                    }, effect: true);
+                    return $"Dispatched typeText \"{text}\" to {candidate.Description}";
+                }
 
             case AXOperation.ReplaceText:
-                permit.Perform(() =>
+                if (node.NativeElement is AutomationElement repEl && repEl.Patterns.Value.IsSupported && !repEl.Patterns.Value.Pattern.IsReadOnly)
                 {
-                    SendMouseMove(centerX, centerY);
-                    SendMouseClick(centerX, centerY);
-                    Thread.Sleep(50);
-                    // Select all (Ctrl+A) and replace
-                    SendKeyDown(VK_CONTROL);
-                    SendKeyDown(VK_A);
-                    SendKeyUp(VK_A);
-                    SendKeyUp(VK_CONTROL);
-                    Thread.Sleep(15);
-                    SendKeyDown(VK_BACK);
-                    SendKeyUp(VK_BACK);
-                    Thread.Sleep(15);
-                    if (!string.IsNullOrEmpty(text))
+                    permit.Perform(() =>
                     {
-                        SendUnicodeString(text, permit);
-                    }
-                    if (IsAutoSubmitControl(candidate, node))
+                        repEl.Patterns.Value.Pattern.SetValue(text ?? "");
+                        if (IsAutoSubmitControl(candidate, node))
+                        {
+                            try { repEl.Focus(); } catch { }
+                            SendKeyDown(VK_RETURN);
+                            SendKeyUp(VK_RETURN);
+                        }
+                    }, effect: true);
+                    return $"Dispatched replaceText \"{text}\" via ValuePattern to {candidate.Description}";
+                }
+                else
+                {
+                    permit.Perform(() =>
                     {
-                        Thread.Sleep(60);
-                        SendKeyDown(VK_RETURN);
-                        SendKeyUp(VK_RETURN);
-                    }
-                }, effect: true);
-                return $"Dispatched replaceText \"{text}\" to {candidate.Description}";
+                        SendMouseMove(centerX, centerY);
+                        SendMouseClick(centerX, centerY);
+                        Thread.Sleep(50);
+                        // Select all (Ctrl+A) and replace
+                        SendKeyDown(VK_CONTROL);
+                        SendKeyDown(VK_A);
+                        SendKeyUp(VK_A);
+                        SendKeyUp(VK_CONTROL);
+                        Thread.Sleep(15);
+                        SendKeyDown(VK_BACK);
+                        SendKeyUp(VK_BACK);
+                        Thread.Sleep(15);
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            SendUnicodeString(text, permit);
+                        }
+                        if (IsAutoSubmitControl(candidate, node))
+                        {
+                            Thread.Sleep(60);
+                            SendKeyDown(VK_RETURN);
+                            SendKeyUp(VK_RETURN);
+                        }
+                    }, effect: true);
+                    return $"Dispatched replaceText \"{text}\" to {candidate.Description}";
+                }
 
             case AXOperation.PressReturn:
                 permit.Perform(() =>

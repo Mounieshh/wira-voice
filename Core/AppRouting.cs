@@ -232,10 +232,28 @@ public static class AppRouting
         }
     }
 
-    public static bool IsSameApp(string? processName, string? windowTitle, InstalledApplication? app)
+    public static bool IsSameApp(string? appOrProcessName, string? windowTitle, InstalledApplication? app)
     {
         if (app == null) return false;
-        return WindowsAppIdentity.IsSameApplication(null, processName, windowTitle, app);
+        return WindowsAppIdentity.IsSameApplication(appOrProcessName, appOrProcessName, windowTitle, app);
+    }
+
+    public static bool IsSameApp(string? friendlyName, string? processName, string? windowTitle, InstalledApplication? app, string? aumid = null)
+    {
+        if (app == null) return false;
+        return WindowsAppIdentity.IsSameApplication(friendlyName, processName, windowTitle, app, aumid);
+    }
+
+    public static bool IsSameApp(AXSnapshot? snapshot, InstalledApplication? app)
+    {
+        if (snapshot == null || app == null) return false;
+        if (!string.IsNullOrEmpty(snapshot.AppUserModelID) &&
+            (string.Equals(snapshot.AppUserModelID, app.AppUserModelID, StringComparison.OrdinalIgnoreCase) ||
+             app.MatchesName(snapshot.AppUserModelID)))
+        {
+            return true;
+        }
+        return WindowsAppIdentity.IsSameApplication(snapshot.AppName, snapshot.AppName, snapshot.WindowTitle, app, snapshot.AppUserModelID);
     }
 
     public static async Task<bool> ActivateAsync(InstalledApplication app, InputPermit permit = default)
@@ -267,7 +285,7 @@ public static class AppRouting
                 Process.Start(psi);
             }
 
-            for (int i = 0; i < 20; i++)
+            for (int i = 0; i < 35; i++)
             {
                 permit.Check();
                 var fgHwnd = WindowsAppIdentity.GetForegroundWindow();
@@ -279,8 +297,9 @@ public static class AppRouting
                         var fgFriendly = WindowsAppIdentity.GetFriendlyAppName((int)fgPid);
                         var fgProcName = Process.GetProcessById((int)fgPid).ProcessName;
                         string fgTitle = WindowsAppIdentity.GetWindowTitle(fgHwnd);
+                        var fgAumid = WindowsAppIdentity.GetAppUserModelId(fgHwnd, (int)fgPid);
 
-                        if (WindowsAppIdentity.IsSameApplication(fgFriendly, fgProcName, fgTitle, app))
+                        if (WindowsAppIdentity.IsSameApplication(fgFriendly, fgProcName, fgTitle, app, fgAumid))
                         {
                             return true;
                         }

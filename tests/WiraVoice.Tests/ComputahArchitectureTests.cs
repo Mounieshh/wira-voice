@@ -11,6 +11,7 @@ using WiraVoice.Core.Automation;
 using WiraVoice.Core.Commands;
 using WiraVoice.Core.Diagnostics;
 using WiraVoice.Core.Language;
+using WiraVoice.Core.Speech;
 using Xunit;
 
 namespace WiraVoice.Tests;
@@ -434,5 +435,88 @@ public class ComputahArchitectureTests
         Assert.True(app.MatchesWindowTitle("Camera"));
         Assert.True(app.MatchesWindowTitle("My Webcam Preview"));
         Assert.False(app.MatchesWindowTitle("Calculator"));
+    }
+
+    [Fact]
+    public void WhisperLocalEngine_TrimTrailingSilence_TrimsSilentTail()
+    {
+        // 1 second of active audio (16000 samples) followed by 2 seconds of silence (32000 samples)
+        int sampleRate = 16000;
+        int activeSamples = 16000;
+        int silentSamples = 32000;
+        byte[] pcm = new byte[(activeSamples + silentSamples) * 2];
+
+        // Fill active portion with a 440Hz sine wave (amplitude 10000 / 32768 ~ 0.3 RMS)
+        for (int i = 0; i < activeSamples; i++)
+        {
+            short sample = (short)(10000 * Math.Sin(2 * Math.PI * 440 * i / sampleRate));
+            pcm[i * 2] = (byte)(sample & 0xFF);
+            pcm[i * 2 + 1] = (byte)((sample >> 8) & 0xFF);
+        }
+        // Silent portion remains zeros
+
+        var trimmed = WhisperLocalEngine.TrimTrailingSilence(pcm, sampleRate, minThreshold: 0.015, keepPaddingMs: 150);
+
+        Assert.True(trimmed.Length < pcm.Length);
+        // Trimmed length should be approximately active audio + 150ms padding (16000 + 2400 = 18400 samples * 2 = 36800 bytes)
+        int maxExpectedLength = (activeSamples + 2400 + 320) * 2;
+        Assert.True(trimmed.Length <= maxExpectedLength);
+    }
+
+    [Fact]
+    public void AppRouting_IsSameApp_SymmetricallyMatchesFriendlyNameAndProcessName()
+    {
+        var chromeApp = new InstalledApplication("Google Chrome", "chrome", @"C:\Program Files\Google\Chrome\Application\chrome.exe", ["chrome", "google chrome"]);
+        var cameraApp = new InstalledApplication("Camera", "Microsoft.Windows.Camera_8wekyb3d8bbwe!App", "shell:AppsFolder\\Microsoft.Windows.Camera_8wekyb3d8bbwe!App", ["camera", "webcam"]);
+
+        // Friendly name match
+        Assert.True(AppRouting.IsSameApp("Google Chrome", "New Tab - Google Chrome", chromeApp));
+        // Process binary name match
+        Assert.True(AppRouting.IsSameApp("chrome", "New Tab", chromeApp));
+        // Token substring match
+        Assert.True(AppRouting.IsSameApp("googlechrome", "", chromeApp));
+
+        // UWP app hosted under ApplicationFrameHost
+        Assert.True(AppRouting.IsSameApp("ApplicationFrameHost", "Camera", cameraApp));
+        // Direct packaged AUMID match
+        Assert.True(AppRouting.IsSameApp("Microsoft.Windows.Camera_8wekyb3d8bbwe!App", "", cameraApp));
+
+        // AXSnapshot overload
+        var snapshot = new AXSnapshot(
+            pid: 1234,
+            appName: "Camera",
+            windowTitle: "Camera",
+            nodes: [],
+            partial: false,
+            appUserModelID: "Microsoft.Windows.Camera_8wekyb3d8bbwe!App");
+        Assert.True(AppRouting.IsSameApp(snapshot, cameraApp));
+    }
+
+    [Fact]
+    public void AXActor_Perform_TypeText_FallsBackGracefullyWhenNativeElementNull()
+    {
+        var permit = InputPermit.Standalone();
+        var node = new AXNode
+        {
+            Id = 0,
+            Role = "AXTextField",
+            Label = "Search input",
+            NativeElement = null
+        };
+        var candidate = new AXCandidate(
+            id: "c0",
+            nodeID: 0,
+            operation: AXOperation.TypeText,
+            description: "Search Box",
+            groupID: 0);
+        var snapshot = new AXSnapshot(
+            pid: 100,
+            appName: "TestApp",
+            windowTitle: "Test",
+            nodes: [node],
+            partial: false);
+
+        var result = AXActor.Perform(candidate, snapshot, "hello", permit, physicalActivation: false);
+        Assert.Contains("Dispatched typeText \"hello\"", result);
     }
 }

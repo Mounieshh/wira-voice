@@ -22,10 +22,10 @@ public sealed class WhisperLocalEngine : ISpeechEngine
     private readonly object _bufferLock = new();
     private readonly System.Collections.Generic.Queue<byte[]> _preRollChunks = new();
     private int _preRollBytes = 0;
-    private const int MaxPreRollBytes = 8000; // 250ms of 16kHz 16-bit mono PCM (16000 * 2 * 0.25)
+    private const int MaxPreRollBytes = 12800; // 400ms of 16kHz 16-bit mono PCM (16000 * 2 * 0.40)
     private const double SpeechStartThreshold = 0.035; // Audio level to trigger speech start from silence
-    private const double SpeechContinueThreshold = 0.008; // Audio level to keep recording while speaking (preserves consonants)
-    private const int SilenceTimeoutMs = 1100; // 1.1s natural pause window before finalizing utterance
+    private const double SpeechContinueThreshold = 0.020; // Audio level to keep recording while speaking (above room noise floor)
+    private const int SilenceTimeoutMs = 450; // 450ms natural pause window before finalizing utterance
     private bool _isListening = false;
     private bool _inSpeech = false;
     private DateTime _speechStartTime = DateTime.MinValue;
@@ -122,12 +122,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
                 _currentTurnId = $"local_turn_{_turnCounter}";
                 Console.WriteLine($"[Voice] Speech detected (level: {level:F2}) -> Recording voice audio...");
                 OnStatusChanged?.Invoke("Listening to voice…");
+                OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, _currentTurnId));
 
                 lock (_bufferLock)
                 {
                     _audioBuffer.SetLength(0);
 
-                    // Replay 250ms pre-roll audio so initial consonant attack is preserved
+                    // Replay 400ms pre-roll audio so initial consonant attack is preserved
                     while (_preRollChunks.Count > 0)
                     {
                         var chunk = _preRollChunks.Dequeue();
@@ -195,9 +196,12 @@ public sealed class WhisperLocalEngine : ISpeechEngine
             _audioBuffer.SetLength(0);
         }
 
+        // Trim trailing room silence before Whisper processing to stop hallucinations
+        pcmData = TrimTrailingSilence(pcmData);
+
         var speechDuration = (DateTime.UtcNow - _speechStartTime).TotalSeconds;
-        // Require at least 250ms of audio and 200ms of active speech duration to discard transient clicks
-        if (pcmData.Length < 8000 || speechDuration < 0.20 || _processor == null)
+        // Require at least 250ms of audio and 150ms of active speech duration to discard transient clicks
+        if (pcmData.Length < 8000 || speechDuration < 0.15 || _processor == null)
         {
             OnStatusChanged?.Invoke("Listening (Local Whisper)…");
             return;
@@ -348,6 +352,44 @@ public sealed class WhisperLocalEngine : ISpeechEngine
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Trims trailing low-energy silence from 16kHz 16-bit mono PCM, retaining a short padding
+    /// window to preserve terminal consonants while eliminating dead air hallucinations in Whisper.
+    /// </summary>
+    public static byte[] TrimTrailingSilence(byte[] pcmData, int sampleRate = 16000, double minThreshold = 0.015, int keepPaddingMs = 150)
+    {
+        if (pcmData == null || pcmData.Length < 4) return pcmData ?? [];
+        int totalSamples = pcmData.Length / 2;
+        int paddingSamples = (sampleRate * keepPaddingMs) / 1000;
+        int lastActiveSample = totalSamples - 1;
+
+        // Scan backward in 10ms windows (160 samples)
+        int window = sampleRate / 100;
+        for (int i = totalSamples - window; i >= 0; i -= window)
+        {
+            double sumSquares = 0;
+            for (int j = 0; j < window; j++)
+            {
+                short s = BitConverter.ToInt16(pcmData, (i + j) * 2);
+                double norm = s / 32768.0;
+                sumSquares += norm * norm;
+            }
+            double rms = Math.Sqrt(sumSquares / window);
+            if (rms >= minThreshold)
+            {
+                lastActiveSample = Math.Min(totalSamples, i + window + paddingSamples);
+                break;
+            }
+        }
+
+        int trimmedBytes = Math.Min(pcmData.Length, Math.Max(lastActiveSample * 2, sampleRate / 2 * 2));
+        if (trimmedBytes >= pcmData.Length) return pcmData;
+
+        var result = new byte[trimmedBytes];
+        Buffer.BlockCopy(pcmData, 0, result, 0, trimmedBytes);
+        return result;
     }
 
     public async ValueTask DisposeAsync()

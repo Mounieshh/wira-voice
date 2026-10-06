@@ -467,9 +467,35 @@ public static class WindowsAppIdentity
     /// </summary>
     public static bool IsSameApplication(string? candidateFriendlyName, string? candidateProcName, string? windowTitle, InstalledApplication? app)
     {
+        return IsSameApplication(candidateFriendlyName, candidateProcName, windowTitle, app, null);
+    }
+
+    /// <summary>
+    /// Compares an observed application name, process name, window title, and optional AUMID against an InstalledApplication.
+    /// Supports UWP ApplicationFrameHost demuxing and dynamic identity resolution without hardcoded lookup tables.
+    /// </summary>
+    public static bool IsSameApplication(string? candidateFriendlyName, string? candidateProcName, string? windowTitle, InstalledApplication? app, string? candidateAumid)
+    {
         if (app == null) return false;
 
-        // 0. Support for UWP applications hosted under ApplicationFrameHost
+        // 0. Direct AUMID match
+        if (!string.IsNullOrEmpty(candidateAumid))
+        {
+            if (string.Equals(candidateAumid, app.AppUserModelID, StringComparison.OrdinalIgnoreCase) ||
+                app.MatchesName(candidateAumid))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(app.AppUserModelID) &&
+                (app.AppUserModelID.StartsWith(candidateAumid, StringComparison.OrdinalIgnoreCase) ||
+                 candidateAumid.StartsWith(app.AppUserModelID, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        // 1. Support for UWP applications hosted under ApplicationFrameHost
         if (!string.IsNullOrEmpty(candidateProcName) &&
             candidateProcName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) &&
             !string.IsNullOrEmpty(windowTitle))
@@ -480,13 +506,13 @@ public static class WindowsAppIdentity
             }
         }
 
-        // 1. Direct match on friendly application name (e.g. "Google Chrome", "Windows Explorer", "Microsoft Edge", "Camera")
+        // 2. Direct match on friendly application name (e.g. "Google Chrome", "Windows Explorer", "Microsoft Edge", "Camera")
         if (!string.IsNullOrEmpty(candidateFriendlyName) && app.MatchesName(candidateFriendlyName))
         {
             return true;
         }
 
-        // 2. Direct match on process name or AUMID
+        // 3. Direct match on process name or AUMID
         if (!string.IsNullOrEmpty(candidateProcName))
         {
             if (string.Equals(candidateProcName, app.AppUserModelID, StringComparison.OrdinalIgnoreCase) ||
@@ -498,9 +524,16 @@ public static class WindowsAppIdentity
             var urlTarget = Path.GetFileNameWithoutExtension(app.Url);
             if (!string.IsNullOrEmpty(urlTarget) && string.Equals(candidateProcName, urlTarget, StringComparison.OrdinalIgnoreCase))
                 return true;
+
+            if (!string.IsNullOrEmpty(app.AppUserModelID) &&
+                (app.AppUserModelID.StartsWith(candidateProcName, StringComparison.OrdinalIgnoreCase) ||
+                 candidateProcName.StartsWith(app.AppUserModelID, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
         }
 
-        // 3. Substring & space-normalized token matching
+        // 4. Substring & space-normalized token matching
         if (!string.IsNullOrEmpty(candidateFriendlyName) && !string.IsNullOrEmpty(app.Name))
         {
             var normCand = candidateFriendlyName.Replace(" ", "").ToLowerInvariant();
@@ -517,7 +550,7 @@ public static class WindowsAppIdentity
                 return true;
         }
 
-        // 4. Window title match
+        // 5. Window title match
         if (!string.IsNullOrEmpty(windowTitle) && app.MatchesWindowTitle(windowTitle))
         {
             return true;
@@ -555,16 +588,17 @@ public static class WindowsAppIdentity
 
         try
         {
-            uint length = 0;
+            uint length = 256;
             var sb = new StringBuilder(256);
             int hr = GetApplicationUserModelId(hProc, ref length, sb);
-            if (hr == 0 && length > 0)
+            if (hr == 122) // ERROR_INSUFFICIENT_BUFFER
             {
                 sb.EnsureCapacity((int)length);
-                if (GetApplicationUserModelId(hProc, ref length, sb) == 0)
-                {
-                    return sb.ToString();
-                }
+                hr = GetApplicationUserModelId(hProc, ref length, sb);
+            }
+            if (hr == 0 && length > 0)
+            {
+                return sb.ToString();
             }
         }
         catch { }
