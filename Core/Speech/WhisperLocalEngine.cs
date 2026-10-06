@@ -22,9 +22,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
     private readonly object _bufferLock = new();
     private readonly System.Collections.Generic.Queue<byte[]> _preRollChunks = new();
     private int _preRollBytes = 0;
-    private const int MaxPreRollBytes = 32000; // 500ms of 16kHz 16-bit mono PCM
+    private const int MaxPreRollBytes = 8000; // 250ms of 16kHz 16-bit mono PCM (16000 * 2 * 0.25)
+    private const double SpeechStartThreshold = 0.035; // Audio level to trigger speech start from silence
+    private const double SpeechContinueThreshold = 0.008; // Audio level to keep recording while speaking (preserves consonants)
+    private const int SilenceTimeoutMs = 1100; // 1.1s natural pause window before finalizing utterance
     private bool _isListening = false;
     private bool _inSpeech = false;
+    private DateTime _speechStartTime = DateTime.MinValue;
     private DateTime _lastSpeechTime = DateTime.MinValue;
     private int _turnCounter = 0;
     private string _currentTurnId = string.Empty;
@@ -56,6 +60,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
             modelPath = ResolvePath(modelPath) ?? modelPath;
         }
 
+        // Automatic discovery: if dedicated English model (ggml-base.en.bin) is present, prefer it for higher accuracy
+        var enCandidate = ResolvePath("models/ggml-base.en.bin");
+        if (File.Exists(enCandidate))
+        {
+            modelPath = enCandidate;
+        }
+
         if (!File.Exists(modelPath))
         {
             OnStatusChanged?.Invoke($"Whisper model not found at {modelPath}");
@@ -64,11 +75,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
 
         try
         {
+            Console.WriteLine($"[SpeechEngine:Whisper] Loading local Whisper model from: {modelPath}...");
             OnStatusChanged?.Invoke("Loading local Whisper model…");
             _whisperFactory = WhisperFactory.FromPath(modelPath);
             _processor = _whisperFactory.CreateBuilder()
                 .WithLanguage("en")
                 .WithThreads(Environment.ProcessorCount)
+                .WithPrompt("Select, click, type, open, submit, scroll, close, cancel, account, window, tab, browser.")
                 .Build();
 
             _isListening = true;
@@ -78,12 +91,14 @@ public sealed class WhisperLocalEngine : ISpeechEngine
             // Background task monitoring end-of-speech silence
             _ = Task.Run(() => MonitorSilenceLoopAsync(_vadCts.Token));
 
+            Console.WriteLine($"[SpeechEngine:Whisper] Ready. Listening for microphone input...");
             OnStatusChanged?.Invoke("Listening (Local Whisper)…");
         }
         catch (Exception ex)
         {
             _isListening = false;
             var errMsg = $"Whisper initialization failed: {ex.Message}";
+            Console.WriteLine($"[SpeechEngine:Whisper] Error: {errMsg}");
             await StopAsync();
             OnStatusChanged?.Invoke(errMsg);
         }
@@ -95,22 +110,24 @@ public sealed class WhisperLocalEngine : ISpeechEngine
 
         if (!_isListening) return;
 
-        // VAD Speech Start Threshold (0.025 captures natural speech)
-        if (level > 0.025)
+        if (!_inSpeech)
         {
-            _lastSpeechTime = DateTime.UtcNow;
-
-            if (!_inSpeech)
+            // VAD Speech Start: requires clear vocal energy to begin recording
+            if (level >= SpeechStartThreshold)
             {
                 _inSpeech = true;
+                _speechStartTime = DateTime.UtcNow;
+                _lastSpeechTime = DateTime.UtcNow;
                 _turnCounter++;
                 _currentTurnId = $"local_turn_{_turnCounter}";
+                Console.WriteLine($"[Voice] Speech detected (level: {level:F2}) -> Recording voice audio...");
+                OnStatusChanged?.Invoke("Listening to voice…");
 
                 lock (_bufferLock)
                 {
                     _audioBuffer.SetLength(0);
 
-                    // Replay pre-roll audio so initial words are completely preserved
+                    // Replay 250ms pre-roll audio so initial consonant attack is preserved
                     while (_preRollChunks.Count > 0)
                     {
                         var chunk = _preRollChunks.Dequeue();
@@ -118,8 +135,14 @@ public sealed class WhisperLocalEngine : ISpeechEngine
                     }
                     _preRollBytes = 0;
                 }
-
-                OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, _currentTurnId));
+            }
+        }
+        else
+        {
+            // VAD Speech Continue: much lower threshold to maintain turn through soft consonants and inter-word pacing
+            if (level >= SpeechContinueThreshold)
+            {
+                _lastSpeechTime = DateTime.UtcNow;
             }
         }
     }
@@ -136,7 +159,7 @@ public sealed class WhisperLocalEngine : ISpeechEngine
             }
             else
             {
-                // Maintain 500ms rolling pre-roll buffer when silent
+                // Maintain 250ms rolling pre-roll buffer when silent
                 _preRollChunks.Enqueue(pcmChunk);
                 _preRollBytes += pcmChunk.Length;
                 while (_preRollBytes > MaxPreRollBytes && _preRollChunks.Count > 0)
@@ -152,13 +175,13 @@ public sealed class WhisperLocalEngine : ISpeechEngine
     {
         while (!ct.IsCancellationRequested && _isListening)
         {
-            await Task.Delay(100, ct);
+            await Task.Delay(80, ct).ConfigureAwait(false);
 
-            // Silence duration threshold: 550ms of silence indicates EndOfTurn
-            if (_inSpeech && (DateTime.UtcNow - _lastSpeechTime).TotalMilliseconds > 550)
+            // Silence duration threshold: 1.1s allows natural speech cadence without cutting phrases mid-sentence
+            if (_inSpeech && (DateTime.UtcNow - _lastSpeechTime).TotalMilliseconds > SilenceTimeoutMs)
             {
                 _inSpeech = false;
-                await TranscribeBufferedAudioAsync();
+                await TranscribeBufferedAudioAsync().ConfigureAwait(false);
             }
         }
     }
@@ -172,33 +195,106 @@ public sealed class WhisperLocalEngine : ISpeechEngine
             _audioBuffer.SetLength(0);
         }
 
-        // Need at least ~250ms of audio (16000 * 2 bytes/sec * 0.25 = 8000 bytes)
-        if (pcmData.Length < 8000 || _processor == null) return;
+        var speechDuration = (DateTime.UtcNow - _speechStartTime).TotalSeconds;
+        // Require at least 250ms of audio and 200ms of active speech duration to discard transient clicks
+        if (pcmData.Length < 8000 || speechDuration < 0.20 || _processor == null)
+        {
+            OnStatusChanged?.Invoke("Listening (Local Whisper)…");
+            return;
+        }
+
+        double durationSec = pcmData.Length / (16000.0 * 2.0);
+        Console.WriteLine($"[Voice] End of speech ({durationSec:F1}s audio). Transcribing with Local Whisper...");
 
         try
         {
-            OnStatusChanged?.Invoke("Transcribing locally…");
+            OnStatusChanged?.Invoke("Transcribing speech locally…");
             var sb = new StringBuilder();
 
-            using var memStream = new MemoryStream(pcmData);
-            await foreach (var result in _processor.ProcessAsync(memStream))
+            int sampleCount = pcmData.Length / 2;
+            float[] samples = new float[sampleCount];
+
+            // 1. Calculate peak amplitude for adaptive gain normalization
+            float maxAbs = 0f;
+            for (int i = 0; i < sampleCount; i++)
             {
-                sb.Append(result.Text);
+                short sample = BitConverter.ToInt16(pcmData, i * 2);
+                float val = Math.Abs(sample / 32768.0f);
+                if (val > maxAbs) maxAbs = val;
             }
 
-            string transcript = sb.ToString().Trim();
-            if (!string.IsNullOrWhiteSpace(transcript))
+            // 2. Adaptive auto-gain: boost quiet speech up to 12x targeting peak ~0.65
+            float gain = 1.0f;
+            if (maxAbs > 0.003f && maxAbs < 0.35f)
             {
-                OnTranscript?.Invoke(transcript, true, _currentTurnId);
-                OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.EndOfTurn, _currentTurnId));
+                gain = Math.Clamp(0.65f / maxAbs, 1.0f, 12.0f);
+            }
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                short sample = BitConverter.ToInt16(pcmData, i * 2);
+                samples[i] = Math.Clamp((sample / 32768.0f) * gain, -1.0f, 1.0f);
+            }
+
+            await foreach (var result in _processor.ProcessAsync(samples))
+            {
+                if (!string.IsNullOrWhiteSpace(result.Text))
+                {
+                    sb.Append(result.Text);
+                }
+            }
+
+            string rawTranscript = sb.ToString().Trim();
+            string cleanTranscript = CleanTranscript(rawTranscript);
+
+            if (!string.IsNullOrWhiteSpace(cleanTranscript))
+            {
+                Console.WriteLine($"[SpeechEngine:Whisper] Transcribed: \"{cleanTranscript}\" (turn: {_currentTurnId})");
+                OnTranscript?.Invoke(cleanTranscript, true, _currentTurnId);
+                OnSpeechEvent?.Invoke(new SpeechTurnEvent(cleanTranscript, SpeechTurnType.EndOfTurn, _currentTurnId));
+            }
+            else
+            {
+                Console.WriteLine($"[SpeechEngine:Whisper] Non-speech audio detected (raw: \"{rawTranscript}\"). Discarding noise.");
             }
 
             OnStatusChanged?.Invoke("Listening (Local Whisper)…");
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[SpeechEngine:Whisper] Transcription error: {ex.Message}");
             OnStatusChanged?.Invoke($"Transcription error: {ex.Message}");
         }
+    }
+
+    public static string CleanTranscript(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+        string trimmed = text.Trim();
+
+        // Discard Whisper special tokens (e.g. [BLANK_AUDIO], [silence], etc.)
+        if (trimmed.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("[BLANK AUDIO]", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("[SILENCE]", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("[MUSIC]", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("[APPLAUSE]", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("[LAUGHTER]", StringComparison.OrdinalIgnoreCase) ||
+            (trimmed.StartsWith("[") && trimmed.EndsWith("]")) ||
+            (trimmed.StartsWith("(") && trimmed.EndsWith(")")))
+        {
+            return string.Empty;
+        }
+
+        // Strip bracket tokens embedded in text (e.g. "[BLANK_AUDIO] Click Submit" -> "Click Submit")
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(trimmed, @"\[[A-Za-z0-9_\s]+\]|\([A-Za-z0-9_\s]+\)", "").Trim();
+
+        if (!cleaned.Any(char.IsLetterOrDigit))
+        {
+            return string.Empty;
+        }
+
+        return cleaned;
     }
 
     public Task StopAsync()

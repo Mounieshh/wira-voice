@@ -34,7 +34,10 @@ public sealed class AudioCaptureService : IDisposable
             try
             {
                 // Capture from default recording endpoint with low latency
-                _capture = new WasapiCapture();
+                var enumerator = new MMDeviceEnumerator();
+                var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console);
+                Console.WriteLine($"[Audio] Active microphone: \"{defaultDevice.FriendlyName}\" ({defaultDevice.AudioClient.MixFormat.SampleRate}Hz, {defaultDevice.AudioClient.MixFormat.Channels}ch)");
+                _capture = new WasapiCapture(defaultDevice);
                 WaveFormat inputFormat = _capture.WaveFormat;
 
                 // Target format: 16,000 Hz, 16-bit, Mono (PCM)
@@ -43,6 +46,7 @@ public sealed class AudioCaptureService : IDisposable
                 _bufferedProvider = new BufferedWaveProvider(inputFormat)
                 {
                     DiscardOnBufferOverflow = true,
+                    ReadFully = false,
                     BufferDuration = TimeSpan.FromSeconds(5)
                 };
 
@@ -100,7 +104,7 @@ public sealed class AudioCaptureService : IDisposable
     {
         if (count == 0 || format == null) return 0.0;
 
-        double sum = 0;
+        double sumSquares = 0;
         int sampleCount = 0;
 
         // 32-bit IEEE float (handles standard IeeeFloat and WASAPI WaveFormatExtensible)
@@ -111,7 +115,7 @@ public sealed class AudioCaptureService : IDisposable
                 float sample = BitConverter.ToSingle(buffer, i);
                 if (!float.IsNaN(sample) && !float.IsInfinity(sample))
                 {
-                    sum += Math.Abs(sample);
+                    sumSquares += sample * sample;
                     sampleCount++;
                 }
             }
@@ -122,7 +126,8 @@ public sealed class AudioCaptureService : IDisposable
             for (int i = 0; i <= count - 2; i += 2 * format.Channels)
             {
                 short sample = BitConverter.ToInt16(buffer, i);
-                sum += Math.Abs(sample) / 32768.0;
+                double norm = sample / 32768.0;
+                sumSquares += norm * norm;
                 sampleCount++;
             }
         }
@@ -133,14 +138,21 @@ public sealed class AudioCaptureService : IDisposable
             {
                 int sample = (buffer[i + 2] << 16) | (buffer[i + 1] << 8) | buffer[i];
                 if ((sample & 0x800000) != 0) sample |= unchecked((int)0xFF000000);
-                sum += Math.Abs(sample) / 8388608.0;
+                double norm = sample / 8388608.0;
+                sumSquares += norm * norm;
                 sampleCount++;
             }
         }
 
         if (sampleCount == 0) return 0.0;
-        double avg = sum / sampleCount;
-        return Math.Clamp(avg * 8.0, 0.0, 1.0); // Boost scale for responsive UI visualization & VAD
+
+        double rms = Math.Sqrt(sumSquares / sampleCount);
+
+        // Gentle noise gate: suppress low ambient hiss below 0.003
+        if (rms < 0.003) return 0.0;
+
+        // Scale audio level matching Computah's level * 8 formula
+        return Math.Clamp((rms - 0.003) * 8.0, 0.0, 1.0);
     }
 
     private void OnCaptureRecordingStopped(object? sender, StoppedEventArgs e)

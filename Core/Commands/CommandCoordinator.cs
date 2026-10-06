@@ -103,6 +103,7 @@ public sealed class CommandCoordinator : IAsyncDisposable
         _taskCts?.Cancel();
         _taskCts = null;
         Running = false;
+        Console.WriteLine($"[Coordinator] Turn began: '{id}'");
         OnStatus?.Invoke("Listening to the new request…", false);
     }
 
@@ -155,6 +156,8 @@ public sealed class CommandCoordinator : IAsyncDisposable
         _finalized.Add(turnId);
         if (_finalized.Count > 128) _finalized.RemoveAt(0);
 
+        Console.WriteLine($"[Coordinator] Submitting command '{turnId}': \"{text}\"");
+
         var ready = _eagerText == text ? _eagerTask : null;
         if (ready == null) DiscardEager(); else { _eagerTask = null; _eagerText = null; }
 
@@ -181,6 +184,11 @@ public sealed class CommandCoordinator : IAsyncDisposable
 
             void Report(WorkflowResult res, bool current)
             {
+                Console.WriteLine($"[Workflow] Complete={res.Complete}, Status=\"{res.Status}\", Events={res.Events.Count}, Elapsed={res.Elapsed:F2}s");
+                foreach (var ev in res.Events)
+                {
+                    Console.WriteLine($"  -> Action: {ev.Action} [{ev.Outcome}]");
+                }
                 OnResult?.Invoke(new WorkflowResult(
                     res.Command, res.Status, res.Complete, res.Events,
                     (DateTime.UtcNow - start).TotalSeconds, _engine.Selector.Usage.Snapshot), current);
@@ -382,6 +390,7 @@ public sealed class CommandCoordinator : IAsyncDisposable
     {
         try { ticket.Check(); } catch { return; }
         Running = false;
+        Console.WriteLine($"[Coordinator] Turn outcome: {outcome} | Status: \"{message}\"");
         FinishTurn(outcome, status: message);
         OnStatus?.Invoke(message, false);
     }

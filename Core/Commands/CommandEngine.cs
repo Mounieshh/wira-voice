@@ -237,11 +237,17 @@ public partial class CommandEngine
             var details = $"{snapshot?.AppName ?? "No AX observation"}; nodes={snapshot?.Nodes.Count ?? 0}; partial={snapshot?.Partial ?? true}; options={scope.Count}; selected={candidate?.Id ?? interpreted.ActionID ?? "none"}; recovery reads={recoveryReads}; capture={captureSeconds:F2}s; model={modelSeconds:F2}s";
             var usage = Selector.Usage.Snapshot.Since(usageStart);
 
+            var effectiveValue = interpreted.Value;
+            if (effectiveValue != null && candidate != null)
+            {
+                effectiveValue = NormalizeCandidateValue(effectiveValue, candidate, command);
+            }
+
             var result = new PreparedAction(
                 interpreted.Route == CommandRoute.Controls || interpreted.Relationship != null ? snapshot : null,
                 launch,
                 candidate,
-                interpreted.Value,
+                effectiveValue,
                 description ?? candidate?.Description,
                 status,
                 details)
@@ -347,5 +353,62 @@ public partial class CommandEngine
         return AXGrouping.Candidates(scene, includeSecondary: includeSecondary)
             .Where(c => !excluded.Contains(c.Description))
             .ToList();
+    }
+
+    public static string NormalizeCandidateValue(string value, AXCandidate candidate, string command)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+
+        // 1. Address Bar normalization for drives/volumes
+        if (candidate.Description.Contains("Address Bar", StringComparison.OrdinalIgnoreCase))
+        {
+            var trimmed = value.Trim();
+
+            // Single letter (e.g. "D" or "C") when command refers to a volume or drive or navigating
+            if (trimmed.Length == 1 && char.IsLetter(trimmed[0]))
+            {
+                return $"{char.ToUpperInvariant(trimmed[0])}:\\";
+            }
+
+            // Single letter with colon (e.g. "D:" or "c:")
+            if (trimmed.Length == 2 && char.IsLetter(trimmed[0]) && trimmed[1] == ':')
+            {
+                return $"{char.ToUpperInvariant(trimmed[0])}:\\";
+            }
+
+            // "volume D" or "drive D" or "new volume D"
+            var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2 && (parts[0].Equals("volume", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("drive", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (parts[1].Length == 1 && char.IsLetter(parts[1][0]))
+                {
+                    return $"{char.ToUpperInvariant(parts[1][0])}:\\";
+                }
+            }
+            if (parts.Length == 3 && parts[0].Equals("new", StringComparison.OrdinalIgnoreCase) &&
+                (parts[1].Equals("volume", StringComparison.OrdinalIgnoreCase) || parts[1].Equals("drive", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (parts[2].Length == 1 && char.IsLetter(parts[2][0]))
+                {
+                    return $"{char.ToUpperInvariant(parts[2][0])}:\\";
+                }
+            }
+        }
+
+        // 2. Search query cleanup (e.g. "the file resume" -> "resume", "file resume" -> "resume")
+        if (candidate.Description.Contains("Search", StringComparison.OrdinalIgnoreCase))
+        {
+            var trimmed = value.Trim();
+            if (trimmed.StartsWith("the file ", StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed.Substring("the file ".Length).Trim();
+            }
+            if (trimmed.StartsWith("file ", StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed.Substring("file ".Length).Trim();
+            }
+        }
+
+        return value;
     }
 }

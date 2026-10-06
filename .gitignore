@@ -27,7 +27,7 @@ Release/
 
 
 # Scratch Documentation (Keeping .github/ fully tracked)
-docs/
+/docs/
 
 # Upstream Reference Codebase (kept locally on disk, untracked in git)
 computah/

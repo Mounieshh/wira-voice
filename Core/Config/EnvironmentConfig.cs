@@ -18,7 +18,7 @@ public static class EnvironmentConfig
     public static string OpenRouterBaseUrl { get; private set; } = "https://openrouter.ai/api/v1";
     public static string JevModel { get; private set; } = "jev-1.13.0";
     public static string TypeSafeApiKey { get; private set; } = string.Empty;
-    public static string WhisperModelPath { get; private set; } = "models/ggml-base.bin";
+    public static string WhisperModelPath { get; private set; } = "models/ggml-base.en.bin";
 
     public static void Initialize()
     {
@@ -51,7 +51,7 @@ public static class EnvironmentConfig
             OpenRouterBaseUrl = Environment.GetEnvironmentVariable("OPENROUTER_BASE_URL") ?? "https://openrouter.ai/api/v1";
             JevModel = Environment.GetEnvironmentVariable("JEV_MODEL") ?? "jev-1.13.0";
             TypeSafeApiKey = Environment.GetEnvironmentVariable("TYPESAFE_API_KEY") ?? string.Empty;
-            WhisperModelPath = Environment.GetEnvironmentVariable("WHISPER_MODEL_PATH") ?? "models/ggml-base.bin";
+            WhisperModelPath = Environment.GetEnvironmentVariable("WHISPER_MODEL_PATH") ?? "models/ggml-base.en.bin";
 
             _loaded = true;
         }

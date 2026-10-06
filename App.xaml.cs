@@ -16,41 +16,26 @@ public partial class App : Application
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int dwProcessId);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool FreeConsole();
-
-    [DllImport("kernel32.dll")]
-    private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate? handler, bool add);
-
-    private delegate bool ConsoleCtrlDelegate(int sig);
-    private static ConsoleCtrlDelegate? _consoleCtrlHandler;
-
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        // If launched from a terminal/console (e.g. dotnet run or powershell/cmd), attach to it
-        if (AttachConsole(ATTACH_PARENT_PROCESS))
+        // Ensure console output is attached
+        AttachConsole(ATTACH_PARENT_PROCESS);
+
+        Console.CancelKeyPress += (s, args) =>
         {
-            _consoleCtrlHandler = sig =>
-            {
-                // Intercept CTRL_C (0), CTRL_BREAK (1), CTRL_CLOSE (2)
-                Console.WriteLine("\n[WiraVoice] Shutdown requested via terminal (Ctrl+C). Exiting...");
-                Dispatcher.Invoke(() =>
-                {
-                    Shutdown(0);
-                });
-                return true;
-            };
+            args.Cancel = true;
+            Console.WriteLine("\n[Server] Shutdown requested via terminal (Ctrl+C). Exiting cleanly...");
+            Dispatcher.Invoke(() => Shutdown(0));
+        };
 
-            SetConsoleCtrlHandler(_consoleCtrlHandler, true);
-            Console.WriteLine("[WiraVoice] Running in foreground. Press Ctrl+C in this terminal or right-click the notch to exit.");
-        }
-    }
-
-    protected override void OnExit(ExitEventArgs e)
-    {
-        FreeConsole();
-        base.OnExit(e);
+        Console.WriteLine();
+        Console.WriteLine("======================================================================");
+        Console.WriteLine("  Wira Voice — Voice Automation & Decision Pipeline");
+        Console.WriteLine("======================================================================");
+        Console.WriteLine("  Press Ctrl+C in this terminal or right-click the top bar to exit.");
+        Console.WriteLine("======================================================================");
+        Console.WriteLine();
     }
 }

@@ -73,7 +73,7 @@ public sealed class WorkflowResult
     }
 }
 
-public readonly record struct OutcomeJudgment(string? Id, int Requests, double Elapsed);
+public readonly record struct OutcomeJudgment(string? Id, int Requests, double Elapsed, string? ProgressEffect = null);
 
 public partial class CommandEngine
 {
@@ -486,10 +486,13 @@ public partial class CommandEngine
                     string receipt;
                     try
                     {
+                        Console.WriteLine($"[Automation] Executing action: \"{candidate.Description}\" ({candidate.Operation})");
                         receipt = await ExecutePrepared(prepared).ConfigureAwait(false);
+                        Console.WriteLine($"[Automation] Action executed successfully: {receipt}");
                     }
                     catch (Exception ex)
                     {
+                        Console.WriteLine($"[Automation] Action preflight failed: {ex.Message}");
                         InputPermit.Check();
                         if (recoveredBeforeDispatch || InputPermit.DispatchCount != dispatchCount)
                         {
@@ -567,7 +570,12 @@ public partial class CommandEngine
                         break;
                     }
 
-                    if (verdict != "progress")
+                    // Intermediate progress: either verdict is explicitly progress, or the UI observed meaningful state change
+                    // and was not contradicted, allowing multi-step workflows to advance to the next step.
+                    bool isIntermediateProgress = verdict == "progress" ||
+                        (verdict != "contradicted" && after.HasObservedChange(candidateBefore) && attempt < 4);
+
+                    if (!isIntermediateProgress)
                     {
                         return MakeResult(
                             verdict == "contradicted"
@@ -638,13 +646,13 @@ public partial class CommandEngine
 
         if (prepared.Launch != null)
         {
-            if (fresh.BundleID != prepared.Launch.BundleID) return false;
+            if (!AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.Launch) && fresh.BundleID != prepared.Launch.BundleID) return false;
             var answer = await ActivationJudgmentAsync(prepared.Launch.Name, pending.Clause.ModelText(checkpoint.Source), checkpoint.Read().VerificationContext, ct).ConfigureAwait(false);
             verdict = answer.Id ?? "unknown";
         }
         else if (prepared.Navigation != null)
         {
-            if (prepared.NavigationBrowser == null || fresh.BundleID != prepared.NavigationBrowser.BundleID) return false;
+            if (prepared.NavigationBrowser == null || (!AppRouting.IsSameApp(fresh.AppName, fresh.WindowTitle, prepared.NavigationBrowser) && fresh.BundleID != prepared.NavigationBrowser.BundleID)) return false;
             var ans = await DestinationJudgmentAsync(prepared.Navigation, fresh, ct).ConfigureAwait(false);
             verdict = ans.Id ?? "unknown";
         }
@@ -703,11 +711,11 @@ public partial class CommandEngine
         {
             var snapshot = await ObserveAfterInputAsync(pid, ct: ct).ConfigureAwait(false);
             current = snapshot;
-            verified = snapshot.BundleID == browser.BundleID && snapshot.ObservesDestination(url);
+            verified = (AppRouting.IsSameApp(snapshot.AppName, snapshot.WindowTitle, browser) || snapshot.BundleID == browser.BundleID) && snapshot.ObservesDestination(url);
             if (verified) break;
 
             var evidence = snapshot.DestinationEvidence;
-            if (snapshot.BundleID == browser.BundleID && evidence != lastEvidence)
+            if ((AppRouting.IsSameApp(snapshot.AppName, snapshot.WindowTitle, browser) || snapshot.BundleID == browser.BundleID) && evidence != lastEvidence)
             {
                 lastEvidence = evidence;
                 var answer = await DestinationJudgmentAsync(url, snapshot, ct).ConfigureAwait(false);
@@ -829,7 +837,7 @@ public partial class CommandEngine
         double modelSeconds = 0.0;
         string? lastJudged = null;
 
-        for (int check = 0; check < 5; check++)
+        for (int check = 0; check < 4; check++)
         {
             var evidence = after.VerificationEvidence(before, candidate);
             if (evidence != lastJudged)
@@ -840,9 +848,14 @@ public partial class CommandEngine
                 verdict = judgment.Id ?? "pending";
             }
             if (verdict != "pending") break;
-            if (check < 4)
+            if (check >= 1 && after.HasObservedChange(before))
             {
-                var delayMs = (int)(Math.Min(1.5, 0.2 * Math.Pow(2, check)) * 1000);
+                // UI has visibly changed and stabilized
+                break;
+            }
+            if (check < 3)
+            {
+                var delayMs = (int)(Math.Min(0.6, 0.15 * Math.Pow(2, check)) * 1000);
                 await Task.Delay(delayMs, ct).ConfigureAwait(false);
                 after = await ObserveAfterInputAsync(before.Pid, ct: ct).ConfigureAwait(false);
             }
@@ -896,9 +909,9 @@ public partial class CommandEngine
             ct: ct).ConfigureAwait(false);
 
         if ((numericMatched == false && answer.Id == "complete") ||
-            (answer.Id == "progress" && !after.HasObservedChange(before)))
+            (answer.Id == "progress" && !after.HasObservedChange(before) && answer.ProgressEffect != "resolved"))
         {
-            return new OutcomeJudgment(null, answer.Requests, answer.Elapsed);
+            return new OutcomeJudgment(null, answer.Requests, answer.Elapsed, answer.ProgressEffect);
         }
 
         return answer;
@@ -969,7 +982,15 @@ public partial class CommandEngine
             outcome = judgment.Answer("progress_effect") == "conflicting" ? "contradicted" : null;
         }
 
-        return new OutcomeJudgment(outcome, judgment.Requests, (DateTime.UtcNow - started).TotalSeconds);
+        // If the overarching goal is still pending or unclear, but the action's specific intermediate progress effect
+        // was positively resolved (e.g. text entered, control clicked open), promote to progress!
+        if (checkObject && (outcome == "pending" || outcome == null) && judgment.Answer("progress_effect") == "resolved")
+        {
+            outcome = "progress";
+        }
+
+        var effect = checkObject ? judgment.Answer("progress_effect") : null;
+        return new OutcomeJudgment(outcome, judgment.Requests, (DateTime.UtcNow - started).TotalSeconds, effect);
     }
 
     public static bool NumericTargetMatches(string value, string literal, AXNode node)

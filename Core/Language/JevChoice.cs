@@ -321,6 +321,11 @@ public sealed class JevSelector
             throw new JevException.ContextLimit();
         }
 
+        bool isOpenRouter = Endpoint.Host.Contains("openrouter.ai") || (!string.IsNullOrEmpty(ApiKey) && ApiKey.StartsWith("sk-or-"));
+        Uri targetUri = isOpenRouter ? new Uri("https://openrouter.ai/api/alpha/decisions") : Endpoint;
+
+        Console.WriteLine($"[Jev] Evaluating {questions.Count} question(s) via {(isOpenRouter ? "OpenRouter" : "TypeSafe")} ({Model})...");
+
         for (int attempt = 0; attempt < 2; attempt++)
         {
             ct.ThrowIfCancellationRequested();
@@ -329,8 +334,13 @@ public sealed class JevSelector
             Usage.BeginRequest();
             callUsage.BeginRequest();
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
+            using var request = new HttpRequestMessage(HttpMethod.Post, targetUri);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
+            if (isOpenRouter)
+            {
+                request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/wira-voice");
+                request.Headers.TryAddWithoutValidation("X-Title", "Wira-Voice");
+            }
             request.Content = new ByteArrayContent(jsonBytes);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
@@ -339,13 +349,14 @@ public sealed class JevSelector
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(8));
+                cts.CancelAfter(TimeSpan.FromSeconds(10));
                 response = await HttpClient.SendAsync(request, cts.Token).ConfigureAwait(false);
                 responseData = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
                 if (attempt == 0) continue;
+                Console.WriteLine($"[Jev] Request error: {ex.Message}");
                 throw new JevException.Invalid($"Jev interpretation request failed after {attempt + 1} attempt(s): {ex.Message}");
             }
 
@@ -386,6 +397,7 @@ public sealed class JevSelector
             if (status != 200)
             {
                 var bodyStr = Encoding.UTF8.GetString(responseData);
+                Console.WriteLine($"[Jev] HTTP {status} error: {bodyStr}");
                 if (status == 400 && bodyStr.Contains("max_tokens_exceeded"))
                 {
                     throw new JevException.ContextLimit();
@@ -395,11 +407,18 @@ public sealed class JevSelector
 
             try
             {
-                return Decode(responseData, chunks, keys);
+                var decoded = Decode(responseData, chunks, keys);
+                Console.WriteLine($"[Jev] Judgment completed ({decoded.Count} answers resolved)");
+                for (int k = 0; k < decoded.Count && k < keys.Count; k++)
+                {
+                    Console.WriteLine($"  [Jev Answer {keys[k]}]: {decoded[k].Choice}");
+                }
+                return decoded;
             }
             catch (JevException.Invalid detail)
             {
                 if (attempt == 0) continue;
+                Console.WriteLine($"[Jev] Invalid response: {detail.Message}");
                 throw new JevException.Invalid($"Jev returned two invalid Choice replies. Last: {detail.Message}");
             }
         }
@@ -410,7 +429,35 @@ public sealed class JevSelector
     private static List<Answer> Decode(byte[] responseData, List<List<JevOption>> chunks, List<string> keys)
     {
         using var doc = JsonDocument.Parse(responseData);
-        if (!doc.RootElement.TryGetProperty("answers", out var rawAnswers) ||
+        JsonElement root = doc.RootElement;
+
+        // If wrapped in OpenRouter / OpenAI chat completion format
+        if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var contentProp))
+            {
+                var contentStr = contentProp.GetString() ?? string.Empty;
+                if (contentStr.Contains("```"))
+                {
+                    int start = contentStr.IndexOf('{');
+                    int end = contentStr.LastIndexOf('}');
+                    if (start >= 0 && end > start)
+                    {
+                        contentStr = contentStr.Substring(start, end - start + 1);
+                    }
+                }
+                using var innerDoc = JsonDocument.Parse(contentStr);
+                return DecodeAnswers(innerDoc.RootElement, chunks, keys);
+            }
+        }
+
+        return DecodeAnswers(root, chunks, keys);
+    }
+
+    private static List<Answer> DecodeAnswers(JsonElement root, List<List<JevOption>> chunks, List<string> keys)
+    {
+        if (!root.TryGetProperty("answers", out var rawAnswers) ||
             rawAnswers.ValueKind != JsonValueKind.Object)
         {
             throw new JevException.Invalid("Jev response has missing answers.");

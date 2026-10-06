@@ -162,16 +162,19 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                         case "EagerEndOfTurn":
                             if (!string.IsNullOrWhiteSpace(transcript))
                             {
+                                Console.WriteLine($"[SpeechEngine:Deepgram] Eager transcript: \"{transcript}\" (turn: {turnId})");
                                 OnTranscript?.Invoke(transcript, false, turnId);
                                 OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.EagerEndOfTurn, turnId));
                             }
                             break;
 
                         case "TurnResumed":
+                            Console.WriteLine($"[SpeechEngine:Deepgram] Turn resumed (user continued speaking)");
                             OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.TurnResumed, turnId));
                             break;
 
                         case "EndOfTurn":
+                            Console.WriteLine($"[SpeechEngine:Deepgram] Final transcript: \"{transcript}\" (turn: {turnId})");
                             OnTranscript?.Invoke(transcript, true, turnId);
                             OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.EndOfTurn, turnId));
                             break;

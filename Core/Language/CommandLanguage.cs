@@ -365,7 +365,7 @@ public sealed class CommandLanguage
         var appOptions = apps.Select((app, i) =>
         {
             var aliasDiff = app.Aliases.Where(a => !string.Equals(a, app.Name, StringComparison.OrdinalIgnoreCase));
-            return new JevOption($"app{i}", $"Activate installed app: {app.Name}; aliases={string.Join(", ", aliasDiff)}; bundle={app.BundleID}");
+            return new JevOption($"app{i}", $"Activate installed app: {app.Name}; aliases={string.Join(", ", aliasDiff)}; aumid={app.AppUserModelID}");
         }).ToList();
 
         var byNode = controls.GroupBy(c => c.NodeID).ToDictionary(g => g.Key, g => g.ToList());
@@ -569,12 +569,26 @@ public sealed class CommandLanguage
         var appAnswer = answers.Answer("application");
         var appIndex = appOptions.FindIndex(o => o.Id == appAnswer);
         var app = appIndex >= 0 ? apps[appIndex] : null;
+        var actionAnswer = answers.Answer("action");
 
-        var needsActivation = route == CommandRoute.Application || (route == CommandRoute.Controls && app != null && (observation == null ||
-            (!string.IsNullOrEmpty(observation.BundleID) ? !string.Equals(observation.BundleID, app.BundleID, StringComparison.OrdinalIgnoreCase) : !string.Equals(observation.AppName, app.Name, StringComparison.OrdinalIgnoreCase))));
+        // Explicit launch intent: e.g. "Open File Explorer", "open camera", "launch calculator"
+        bool isExplicitLaunch = IsExplicitAppLaunchIntent(clause.Text, app);
+
+        // Fallback: If route was none_here or null, or user issued an explicit launch command targeting an installed app
+        if ((route == null || isExplicitLaunch) && app != null &&
+            (isExplicitLaunch || string.IsNullOrEmpty(actionAnswer) || actionAnswer == "none_here"))
+        {
+            route = CommandRoute.Application;
+        }
+
+        bool isAlreadyForeground = observation != null && app != null &&
+            (AppRouting.IsSameApp(observation.AppName, observation.WindowTitle, app) ||
+             (!string.IsNullOrEmpty(observation.AppUserModelID) && string.Equals(observation.AppUserModelID, app.AppUserModelID, StringComparison.OrdinalIgnoreCase)));
+
+        var needsActivation = route == CommandRoute.Application || (route == CommandRoute.Controls && app != null && !isAlreadyForeground);
 
         string? actionID = route == null ? null : needsActivation ? (appIndex >= 0 ? $"app{appIndex}" : null) :
-            route == CommandRoute.Navigation ? "navigate" : answers.Answer("action");
+            route == CommandRoute.Navigation ? "navigate" : actionAnswer;
 
         var valueAnswers = new ValueSelection(answers);
         var conditionalState = new Dictionary<string, object?>(state)
@@ -860,5 +874,32 @@ public sealed class CommandLanguage
         }
 
         return uri;
+    }
+
+    public static bool IsExplicitAppLaunchIntent(string? instruction, InstalledApplication? app)
+    {
+        if (app == null || string.IsNullOrWhiteSpace(instruction)) return false;
+
+        var clean = instruction.Trim(' ', ',', '.', ';', '!', '?', '"', '\'').Trim();
+        var lower = clean.ToLowerInvariant();
+
+        var launchPrefixes = new[] { "open ", "launch ", "start ", "switch to ", "bring up " };
+        foreach (var prefix in launchPrefixes)
+        {
+            if (lower.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var targetName = lower.Substring(prefix.Length).Trim();
+                if (app.MatchesName(targetName))
+                {
+                    return true;
+                }
+
+                if (targetName.Length >= 4 && targetName.Contains(app.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

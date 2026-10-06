@@ -102,10 +102,16 @@ public static class AXActor
                 {
                     SendMouseMove(centerX, centerY);
                     SendMouseClick(centerX, centerY);
-                    Thread.Sleep(30);
+                    Thread.Sleep(50);
                     if (!string.IsNullOrEmpty(text))
                     {
                         SendUnicodeString(text, permit);
+                    }
+                    if (IsAutoSubmitControl(candidate, node))
+                    {
+                        Thread.Sleep(60);
+                        SendKeyDown(VK_RETURN);
+                        SendKeyUp(VK_RETURN);
                     }
                 }, effect: true);
                 return $"Dispatched typeText \"{text}\" to {candidate.Description}";
@@ -115,19 +121,25 @@ public static class AXActor
                 {
                     SendMouseMove(centerX, centerY);
                     SendMouseClick(centerX, centerY);
-                    Thread.Sleep(30);
+                    Thread.Sleep(50);
                     // Select all (Ctrl+A) and replace
                     SendKeyDown(VK_CONTROL);
                     SendKeyDown(VK_A);
                     SendKeyUp(VK_A);
                     SendKeyUp(VK_CONTROL);
-                    Thread.Sleep(10);
+                    Thread.Sleep(15);
                     SendKeyDown(VK_BACK);
                     SendKeyUp(VK_BACK);
-                    Thread.Sleep(10);
+                    Thread.Sleep(15);
                     if (!string.IsNullOrEmpty(text))
                     {
                         SendUnicodeString(text, permit);
+                    }
+                    if (IsAutoSubmitControl(candidate, node))
+                    {
+                        Thread.Sleep(60);
+                        SendKeyDown(VK_RETURN);
+                        SendKeyUp(VK_RETURN);
                     }
                 }, effect: true);
                 return $"Dispatched replaceText \"{text}\" to {candidate.Description}";
@@ -414,5 +426,14 @@ public static class AXActor
             SendInput(2, inputs, Marshal.SizeOf<INPUT>());
             Thread.Sleep(3);
         }
+    }
+
+    private static bool IsAutoSubmitControl(AXCandidate candidate, AXNode node)
+    {
+        return candidate.Description.Contains("Address Bar", StringComparison.OrdinalIgnoreCase) ||
+               candidate.Description.Contains("Search Box", StringComparison.OrdinalIgnoreCase) ||
+               candidate.Description.Contains("Search Field", StringComparison.OrdinalIgnoreCase) ||
+               node.Role == "AXSearchField" ||
+               (node.Role == "AXTextField" && (node.Label.Contains("Search", StringComparison.OrdinalIgnoreCase) || node.Label.Contains("Address", StringComparison.OrdinalIgnoreCase)));
     }
 }

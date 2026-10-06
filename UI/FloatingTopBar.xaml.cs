@@ -49,11 +49,14 @@ public partial class FloatingTopBar : Window
         var apiKey = EnvironmentConfig.TypeSafeApiKey;
         if (string.IsNullOrEmpty(apiKey)) apiKey = EnvironmentConfig.OpenRouterApiKey;
 
-        var endpoint = !string.IsNullOrEmpty(EnvironmentConfig.TypeSafeApiKey)
+        bool hasTypeSafeKey = !string.IsNullOrEmpty(EnvironmentConfig.TypeSafeApiKey);
+        var endpoint = hasTypeSafeKey
             ? new Uri("https://api.typesafe.ai/v1/systemone")
-            : new Uri(EnvironmentConfig.OpenRouterBaseUrl.TrimEnd('/') + "/systemone");
+            : new Uri("https://openrouter.ai/api/alpha/decisions");
 
-        var jevSelector = new JevSelector(apiKey, EnvironmentConfig.JevModel, endpoint: endpoint);
+        var jevModel = hasTypeSafeKey ? EnvironmentConfig.JevModel : "typesafe/jev-1.13";
+
+        var jevSelector = new JevSelector(apiKey, jevModel, endpoint: endpoint);
         var engine = new CommandEngine(jevSelector);
 
         _coordinator = new CommandCoordinator(engine, speechEngine: router);
@@ -71,8 +74,12 @@ public partial class FloatingTopBar : Window
         _animationTimer.Tick += (s, e) => _viewModel.UpdateWaveformTick(0.033);
         _animationTimer.Start();
 
-        // 3. Center notch at top of screen
-        Loaded += (s, e) => CenterOnScreen();
+        // 3. Center notch at top of screen and automatically start listening
+        Loaded += async (s, e) =>
+        {
+            CenterOnScreen();
+            await _viewModel.ToggleListeningAsync();
+        };
         SizeChanged += (s, e) => CenterOnScreen();
     }
 

@@ -13,7 +13,8 @@ namespace WiraVoice.Core.Automation;
 public sealed class AXSnapshot
 {
     public int Pid { get; }
-    public string? BundleID { get; }
+    public string? AppUserModelID { get; }
+    public string? BundleID => AppUserModelID;
     public string AppName { get; }
     public string WindowTitle { get; }
     public List<AXNode> Nodes { get; }
@@ -37,10 +38,11 @@ public sealed class AXSnapshot
         IntPtr? menuBarHandle = null,
         string? bundleID = null,
         List<AXCoverageGap>? coverage = null,
-        List<IntPtr>? applicationWindows = null)
+        List<IntPtr>? applicationWindows = null,
+        string? appUserModelID = null)
     {
         Pid = pid;
-        BundleID = bundleID;
+        AppUserModelID = appUserModelID ?? bundleID;
         AppName = appName;
         WindowTitle = windowTitle;
         Nodes = nodes;
@@ -96,6 +98,7 @@ public sealed class AXSnapshot
 
     public bool HasObservedChange(AXSnapshot other)
     {
+        if (!string.Equals(WindowTitle, other.WindowTitle, StringComparison.Ordinal)) return true;
         if (!SameWindow(other) || Nodes.Count != other.Nodes.Count || Handles.Count != other.Handles.Count)
         {
             return true;

@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WiraVoice.Core;
 using WiraVoice.Core.Automation;
 using WiraVoice.Core.Commands;
 using WiraVoice.Core.Diagnostics;
@@ -167,5 +168,271 @@ public class ComputahArchitectureTests
         Assert.NotNull(judgments.Ids[0]);
         // Because 300 options were chunked by 150 into 2 parts, it took round 1 (2 parts) + round 2 (finalists)
         Assert.True(requestsCount >= 2);
+    }
+
+    [Fact]
+    public async Task JevSelector_HandlesOpenRouterResponseFormat()
+    {
+        var options = new List<JevOption>
+        {
+            new("n0_click", "Click Submit"),
+            new("n1_click", "Click Cancel")
+        };
+        var q = new JevQuestion("Select action", options, key: "action");
+
+        var innerAnswers = new
+        {
+            action = new
+            {
+                type = "choice",
+                choice = "n0_click",
+                probabilities = new Dictionary<string, double>
+                {
+                    ["n0_click"] = 0.9,
+                    ["n1_click"] = 0.05,
+                    ["none_here"] = 0.05
+                }
+            }
+        };
+
+        var openRouterResponse = JsonSerializer.Serialize(new
+        {
+            model = "typesafe/jev-1.13",
+            answers = innerAnswers,
+            usage = new { input_tokens = 42 }
+        });
+
+        HttpRequestMessage? capturedRequest = null;
+        var fakeHandler = new FakeHttpMessageHandler(req =>
+        {
+            capturedRequest = req;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(openRouterResponse, System.Text.Encoding.UTF8, "application/json")
+            });
+        });
+
+        using var http = new HttpClient(fakeHandler);
+        // sk-or- triggers OpenRouter mode to use /api/alpha/decisions
+        var selector = new JevSelector("sk-or-v1-fake-key", endpoint: new Uri("https://openrouter.ai/api/alpha/decisions"), httpClient: http);
+
+        var judgments = await selector.JudgeAsync([], [q]);
+
+        Assert.NotNull(judgments);
+        Assert.Equal("n0_click", judgments.Ids[0]);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://openrouter.ai/api/alpha/decisions", capturedRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public void IsSameApp_FuzzyAndAliasMatching_ResolvesWindowsApps()
+    {
+        var chrome = new InstalledApplication("Google Chrome", "google chrome", @"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Google Chrome.lnk");
+        var edge = new InstalledApplication("Microsoft Edge", "msedge", "msedge.exe", ["Registered default browser"]);
+        var code = new InstalledApplication("Visual Studio Code", "code", @"C:\Program Files\Microsoft VS Code\Code.exe");
+
+        // Chrome process name "chrome" matches "Google Chrome"
+        Assert.True(WiraVoice.Core.AppRouting.IsSameApp("chrome", "New Tab - Google Chrome", chrome));
+        Assert.True(WiraVoice.Core.AppRouting.IsSameApp("chrome", null, chrome));
+
+        // Edge process name "msedge" matches "Microsoft Edge"
+        Assert.True(WiraVoice.Core.AppRouting.IsSameApp("msedge", "Start", edge));
+
+        // Code process name "Code" matches "Visual Studio Code"
+        Assert.True(WiraVoice.Core.AppRouting.IsSameApp("Code", "WiraVoice - Visual Studio Code", code));
+
+        // Distinct apps do NOT match
+        Assert.False(WiraVoice.Core.AppRouting.IsSameApp("notepad", "Untitled - Notepad", chrome));
+        Assert.False(WiraVoice.Core.AppRouting.IsSameApp("cmd", "Command Prompt", edge));
+    }
+
+    [Fact]
+    public void TopBarViewModel_StrictlyShowsSpokenSentenceWithoutStatusNoise()
+    {
+        var vm = new WiraVoice.UI.TopBarViewModel();
+
+        // 1. Initial idle state
+        Assert.Equal("Say a command or click to listen…", vm.DisplayText);
+        Assert.True(vm.IsPlaceholder);
+
+        // 2. User speaks and transcript arrives
+        vm.Transcript = "Open anti-gravity.";
+        vm.Status = "Transcribing speech locally…";
+        // Must show purely the transcript, NO parenthetical status tags
+        Assert.Equal("Open anti-gravity.", vm.DisplayText);
+        Assert.False(vm.IsPlaceholder);
+
+        // 3. Status changes to decision/workflow step
+        vm.Status = "No clear action requested.";
+        Assert.Equal("Open anti-gravity.", vm.DisplayText);
+
+        vm.Status = "Finding an action…";
+        Assert.Equal("Open anti-gravity.", vm.DisplayText);
+    }
+
+    [Fact]
+    public void NormalizeCandidateValue_AddressBarAndSearch_NormalizesValues()
+    {
+        var addressCandidate = new AXCandidate("n1", 1, AXOperation.TypeText, "AXTextField: Address Bar [typeText]", 0);
+        var searchCandidate = new AXCandidate("n2", 2, AXOperation.TypeText, "AXSearchField: Search Box [typeText]", 0);
+
+        // Drive / Volume single letter -> D:\
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("D", addressCandidate, "Go to new volume D."));
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("d", addressCandidate, "Go to volume d"));
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("D:", addressCandidate, "Go to D:"));
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("volume D", addressCandidate, "Go to volume D"));
+        Assert.Equal(@"C:\", CommandEngine.NormalizeCandidateValue("C", addressCandidate, "Go to C drive"));
+
+        // Search Box query cleanup
+        Assert.Equal("resume", CommandEngine.NormalizeCandidateValue("the file resume", searchCandidate, "search for the file resume"));
+        Assert.Equal("resume", CommandEngine.NormalizeCandidateValue("file resume", searchCandidate, "search for file resume"));
+        Assert.Equal("budget report.xlsx", CommandEngine.NormalizeCandidateValue("the file budget report.xlsx", searchCandidate, "find the file budget report.xlsx"));
+    }
+
+    [Fact]
+    public void AppRouting_Installed_IncludesFileExplorer()
+    {
+        var installed = AppRouting.Installed();
+        Assert.Contains(installed, app => app.Name.Equals("File Explorer", StringComparison.OrdinalIgnoreCase) ||
+                                          app.BundleID.Equals("explorer", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void WindowsAppIdentity_ResolvesFriendlyName_FromExecutablePath()
+    {
+        var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var explorerExe = System.IO.Path.Combine(winDir, "explorer.exe");
+        if (System.IO.File.Exists(explorerExe))
+        {
+            var friendly = WindowsAppIdentity.GetFriendlyAppNameFromPath(explorerExe);
+            Assert.Equal("Windows Explorer", friendly);
+        }
+    }
+
+    [Fact]
+    public void WindowsAppIdentity_IsSameApplication_MatchesDynamically()
+    {
+        var chromeApp = new InstalledApplication("Google Chrome", "Chrome", @"C:\Program Files\Google\Chrome\Application\chrome.exe", ["chrome", "browser"]);
+
+        // Match via friendly name
+        Assert.True(WindowsAppIdentity.IsSameApplication("Google Chrome", "chrome", "New Tab - Google Chrome", chromeApp));
+
+        // Match via process name
+        Assert.True(WindowsAppIdentity.IsSameApplication("chrome", "chrome", "Google", chromeApp));
+
+        // Match via window title
+        Assert.True(WindowsAppIdentity.IsSameApplication(null, null, "Inbox (5) - Google Chrome", chromeApp));
+
+        // Negative match
+        var notepadApp = new InstalledApplication("Notepad", "Notepad", @"C:\Windows\notepad.exe");
+        Assert.False(WindowsAppIdentity.IsSameApplication("Google Chrome", "chrome", "New Tab - Google Chrome", notepadApp));
+    }
+
+    [Fact]
+    public void InstalledApplication_ModelsAppUserModelID_AndForwardsBundleID()
+    {
+        var app = new InstalledApplication("Antigravity", "electron.app.Antigravity", @"C:\App\Antigravity.exe");
+        Assert.Equal("electron.app.Antigravity", app.AppUserModelID);
+        Assert.Equal("electron.app.Antigravity", app.BundleID);
+        Assert.Contains("Antigravity", app.Aliases);
+        Assert.Contains("electron.app.Antigravity", app.Aliases);
+    }
+
+    [Fact]
+    public void NormalizeCandidateValue_SupportsNewVolumeD()
+    {
+        var addressCandidate = new AXCandidate("n1", 1, AXOperation.TypeText, "AXTextField: Address Bar [typeText]", 0);
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("new volume D", addressCandidate, "Go to new volume D."));
+        Assert.Equal(@"D:\", CommandEngine.NormalizeCandidateValue("new drive D", addressCandidate, "Go to new drive D."));
+    }
+
+    [Fact]
+    public void AXSnapshot_HasObservedChange_DetectsWindowTitleChange()
+    {
+        var snapshot1 = new AXSnapshot(1234, "Windows Explorer", "Home - File Explorer", [], false);
+        var snapshot2 = new AXSnapshot(1234, "Windows Explorer", "New Volume (D:) - File Explorer", [], false);
+
+        Assert.True(snapshot2.HasObservedChange(snapshot1));
+    }
+
+    [Fact]
+    public void WindowsAppIdentity_IsSameApplication_MatchesUwpApplicationFrameHost()
+    {
+        var cameraApp = new InstalledApplication("Camera", "Microsoft.WindowsCamera_8wekyb3d8bbwe!App", "shell:AppsFolder\\Microsoft.WindowsCamera_8wekyb3d8bbwe!App");
+        var calcApp = new InstalledApplication("Calculator", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App");
+
+        // Positive UWP match: process is ApplicationFrameHost and title is Camera
+        Assert.True(WindowsAppIdentity.IsSameApplication("Application Frame Host", "ApplicationFrameHost", "Camera", cameraApp));
+        Assert.True(WindowsAppIdentity.IsSameApplication("Application Frame Host", "ApplicationFrameHost", "Calculator", calcApp));
+
+        // Negative UWP match: title mismatch
+        Assert.False(WindowsAppIdentity.IsSameApplication("Application Frame Host", "ApplicationFrameHost", "Camera", calcApp));
+    }
+
+    [Fact]
+    public void WindowsAppIdentity_IsShellInfrastructureWindow_IdentifiesShellClasses()
+    {
+        Assert.True(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "Shell_TrayWnd"));
+        Assert.True(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "Shell_SecondaryTrayWnd"));
+        Assert.True(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "Progman"));
+        Assert.True(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "WorkerW"));
+        Assert.False(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "CabinetWClass"));
+        Assert.False(WindowsAppIdentity.IsShellInfrastructureWindow(IntPtr.Zero, "Chrome_WidgetWin_1"));
+    }
+
+    [Fact]
+    public void WindowsAppIdentity_IsFileExplorerFolderWindow_IdentifiesCabinetWClass()
+    {
+        Assert.True(WindowsAppIdentity.IsFileExplorerFolderWindow(IntPtr.Zero, "CabinetWClass"));
+        Assert.True(WindowsAppIdentity.IsFileExplorerFolderWindow(IntPtr.Zero, "ExploreWClass"));
+        Assert.False(WindowsAppIdentity.IsFileExplorerFolderWindow(IntPtr.Zero, "Shell_TrayWnd"));
+        Assert.False(WindowsAppIdentity.IsFileExplorerFolderWindow(IntPtr.Zero, "Progman"));
+    }
+
+    [Fact]
+    public void AppRouting_Installed_PinsFileExplorerToExplorerExeDirectly()
+    {
+        var apps = AppRouting.Installed();
+        var explorer = apps.FirstOrDefault(a => a.Name.Equals("File Explorer", StringComparison.OrdinalIgnoreCase));
+
+        Assert.NotNull(explorer);
+        Assert.EndsWith("explorer.exe", explorer.Url, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(explorer.Aliases, a => a.Equals("explorer", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(explorer.Aliases, a => a.Equals("windows explorer", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(explorer.Aliases, a => a.Equals("folder", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(explorer.Aliases, a => a.Equals("folders", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(explorer.Aliases, a => a.Equals("volume", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(explorer.Aliases, a => a.Equals("volumes", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CommandLanguage_IsExplicitAppLaunchIntent_DetectsExplicitLaunchPatterns()
+    {
+        var explorerApp = new InstalledApplication("File Explorer", "explorer", "explorer.exe", ["windows explorer", "explorer"]);
+        var cameraApp = new InstalledApplication("Camera", "Microsoft.WindowsCamera", "camera.exe");
+
+        Assert.True(CommandLanguage.IsExplicitAppLaunchIntent("Open File Explorer", explorerApp));
+        Assert.True(CommandLanguage.IsExplicitAppLaunchIntent(", open camera.", cameraApp));
+        Assert.True(CommandLanguage.IsExplicitAppLaunchIntent("launch camera", cameraApp));
+        Assert.True(CommandLanguage.IsExplicitAppLaunchIntent("switch to file explorer", explorerApp));
+
+        // Non-launch utterances and greedy false-positive prevention
+        Assert.False(CommandLanguage.IsExplicitAppLaunchIntent("search for the file resume", explorerApp));
+        Assert.False(CommandLanguage.IsExplicitAppLaunchIntent("click on the button", cameraApp));
+        Assert.False(CommandLanguage.IsExplicitAppLaunchIntent("open c", cameraApp));
+        Assert.False(CommandLanguage.IsExplicitAppLaunchIntent("start c", cameraApp));
+    }
+
+    [Fact]
+    public void InstalledApplication_MatchesNameAndWindowTitle_WorksCorrectly()
+    {
+        var app = new InstalledApplication("Camera", "Microsoft.WindowsCamera", "camera.exe", ["webcam"]);
+        Assert.True(app.MatchesName("Camera"));
+        Assert.True(app.MatchesName("webcam"));
+        Assert.False(app.MatchesName("c"));
+
+        Assert.True(app.MatchesWindowTitle("Camera"));
+        Assert.True(app.MatchesWindowTitle("My Webcam Preview"));
+        Assert.False(app.MatchesWindowTitle("Calculator"));
     }
 }

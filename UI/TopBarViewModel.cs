@@ -38,7 +38,13 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
     public string Status
     {
         get => _status;
-        set { _status = value; OnPropertyChanged(); }
+        set
+        {
+            _status = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DisplayText));
+            OnPropertyChanged(nameof(IsPlaceholder));
+        }
     }
 
     public string Transcript
@@ -58,7 +64,9 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         get
         {
             if (!string.IsNullOrWhiteSpace(_transcript))
+            {
                 return _transcript;
+            }
 
             return _isListening ? "Go ahead, I'm listening…" : "Say a command or click to listen…";
         }
@@ -149,7 +157,18 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         {
             _router.OnStatusChanged += status =>
             {
-                SafeDispatch(() => Status = status);
+                SafeDispatch(() =>
+                {
+                    Status = status;
+                    if (status.StartsWith("Listening to voice", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Fresh speech started: clear old transcript so top bar visibly resets
+                        _transcript = string.Empty;
+                        OnPropertyChanged(nameof(Transcript));
+                        OnPropertyChanged(nameof(DisplayText));
+                        OnPropertyChanged(nameof(IsPlaceholder));
+                    }
+                });
             };
 
             _router.OnTranscript += (text, isFinal, turnId) =>
@@ -158,54 +177,57 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
                 {
                     if (!string.IsNullOrWhiteSpace(text))
                     {
+                        Console.WriteLine($"[TopBar] Updating display transcript: \"{text}\"");
                         Transcript = text;
+                        Status = "Transcribed";
                     }
                 });
             };
 
             _router.OnAudioLevel += level =>
             {
-                SafeDispatch(() => AudioLevel = level);
+                AudioLevel = level;
             };
         }
     }
 
     /// <summary>
     /// Smoothly updates the 4 audio visualizer waveform bars matching Computah's exact formula.
+    /// When the user is silent, the dots remain completely still at baseline height 4.0.
+    /// When the user speaks, they dynamically scale into lively equalizer bars.
     /// </summary>
     public void UpdateWaveformTick(double elapsedSeconds = 0.033)
     {
-        double rate = _audioLevel > _displayedLevel ? 25.0 : 8.0;
+        double rate = _audioLevel > _displayedLevel ? 20.0 : 7.0;
         _displayedLevel += (_audioLevel - _displayedLevel) * Math.Min(1.0, elapsedSeconds * rate);
 
         if (_isListening)
         {
-            double phase = (DateTime.UtcNow - _startTime).TotalSeconds * 5.0;
-            double boost = Math.Max(0.0, _displayedLevel);
-            if (boost > 0.015)
+            if (_displayedLevel <= 0.005)
             {
-                // Active voice speaking: lively dynamic equalizer
-                Bar0Height = Math.Clamp(4.0 + boost * (11.0 + (Math.Sin(phase + 0 * 1.3) + 1.0) * 6.0), 3.5, 22.0);
-                Bar1Height = Math.Clamp(4.0 + boost * (12.0 + (Math.Sin(phase + 1 * 1.3) + 1.0) * 7.0), 3.5, 22.0);
-                Bar2Height = Math.Clamp(4.0 + boost * (13.0 + (Math.Sin(phase + 2 * 1.3) + 1.0) * 7.0), 3.5, 22.0);
-                Bar3Height = Math.Clamp(4.0 + boost * (10.0 + (Math.Sin(phase + 3 * 1.3) + 1.0) * 6.0), 3.5, 22.0);
+                // Silent: dots remain completely motionless
+                Bar0Height = 4.0;
+                Bar1Height = 4.0;
+                Bar2Height = 4.0;
+                Bar3Height = 4.0;
             }
             else
             {
-                // Subtle ambient pulse while listening so user knows mic is on
-                Bar0Height = 5.0 + Math.Sin(phase + 0 * 0.9) * 1.5;
-                Bar1Height = 8.0 + Math.Sin(phase + 1 * 0.9) * 2.0;
-                Bar2Height = 11.0 + Math.Sin(phase + 2 * 0.9) * 2.0;
-                Bar3Height = 6.0 + Math.Sin(phase + 3 * 0.9) * 1.5;
+                // Active speech: scale bars using Computah's exact formula clamped to bar height
+                double phase = (DateTime.UtcNow - _startTime).TotalSeconds * 4.0;
+                Bar0Height = Math.Clamp(4.0 + _displayedLevel * (10.0 + (Math.Sin(phase + 0 * 1.2) + 1.0) * 4.0), 4.0, 22.0);
+                Bar1Height = Math.Clamp(4.0 + _displayedLevel * (10.0 + (Math.Sin(phase + 1 * 1.2) + 1.0) * 4.0), 4.0, 22.0);
+                Bar2Height = Math.Clamp(4.0 + _displayedLevel * (10.0 + (Math.Sin(phase + 2 * 1.2) + 1.0) * 4.0), 4.0, 22.0);
+                Bar3Height = Math.Clamp(4.0 + _displayedLevel * (10.0 + (Math.Sin(phase + 3 * 1.2) + 1.0) * 4.0), 4.0, 22.0);
             }
         }
         else
         {
-            // Resting state heights when stopped
-            Bar0Height = 6.0;
-            Bar1Height = 13.0;
-            Bar2Height = 17.0;
-            Bar3Height = 9.0;
+            // Resting state heights when stopped (matching upstream Computah [7, 15, 20, 10])
+            Bar0Height = 7.0;
+            Bar1Height = 15.0;
+            Bar2Height = 20.0;
+            Bar3Height = 10.0;
         }
     }
 

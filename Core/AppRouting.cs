@@ -14,51 +14,86 @@ namespace WiraVoice.Core;
 public sealed class InstalledApplication : IEquatable<InstalledApplication>
 {
     public string Name { get; }
-    public string BundleID { get; }
+    public string AppUserModelID { get; }
+    public string BundleID => AppUserModelID;
     public string Url { get; }
     public List<string> Aliases { get; }
 
-    public InstalledApplication(string name, string bundleID, string url, List<string>? aliases = null)
+    public InstalledApplication(string name, string appUserModelID, string url, List<string>? aliases = null)
     {
         Name = name;
-        BundleID = bundleID;
+        AppUserModelID = appUserModelID;
         Url = url;
-        var list = new List<string> { name, Path.GetFileNameWithoutExtension(url) };
+        var list = new List<string> { name, Path.GetFileNameWithoutExtension(url), appUserModelID };
         if (aliases != null) list.AddRange(aliases);
-        Aliases = list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Aliases = list.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public bool MatchesName(string candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
+        if (string.Equals(candidate, Name, StringComparison.OrdinalIgnoreCase)) return true;
+        return Aliases.Any(a => string.Equals(a, candidate, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public bool MatchesWindowTitle(string windowTitle)
+    {
+        if (string.IsNullOrWhiteSpace(windowTitle)) return false;
+        if (windowTitle.Contains(Name, StringComparison.OrdinalIgnoreCase)) return true;
+        return Aliases.Any(a => a.Length >= 4 && windowTitle.Contains(a, StringComparison.OrdinalIgnoreCase));
     }
 
     public bool Equals(InstalledApplication? other)
     {
         if (other is null) return false;
-        return string.Equals(BundleID, other.BundleID, StringComparison.OrdinalIgnoreCase) ||
+        return string.Equals(AppUserModelID, other.AppUserModelID, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(Name, other.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     public override bool Equals(object? obj) => obj is InstalledApplication other && Equals(other);
-    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(BundleID);
+    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(AppUserModelID);
 }
 
 /// <summary>
-/// Discovers installed applications, default browser, and handles activation on Windows.
-/// Exact port of Computah's AppRouting.swift adapted for Windows.
+/// Discovers installed applications, default browser, and handles window activation on Windows.
+/// Native Windows implementation using AppUserModelID (AUMID) and PE FileDescription.
 /// </summary>
 public static class AppRouting
 {
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     public static List<InstalledApplication> Installed()
     {
         var result = new Dictionary<string, InstalledApplication>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. Scan Start Menu Programs (System & User)
+        // 1. Shell AppsFolder (Win32, UWP, and MSIX applications with authentic AUMIDs)
+        try
+        {
+            foreach (var kvp in WindowsAppIdentity.ShellAppsCatalog)
+            {
+                var name = kvp.Key;
+                var aumid = kvp.Value;
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(aumid)) continue;
+
+                var id = name.ToLowerInvariant();
+                if (!result.ContainsKey(id))
+                {
+                    string target = aumid;
+                    if (File.Exists(aumid))
+                    {
+                        var peDesc = WindowsAppIdentity.GetFriendlyAppNameFromPath(aumid);
+                        if (peDesc != "Unknown") name = peDesc;
+                    }
+                    else
+                    {
+                        target = $"shell:AppsFolder\\{aumid}";
+                    }
+                    result[id] = new InstalledApplication(name, aumid, target, [name, aumid]);
+                }
+            }
+        }
+        catch { }
+
+        // 2. Scan Start Menu Programs (System & User shortcuts)
         var startMenuFolders = new[]
         {
             Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
@@ -85,7 +120,7 @@ public static class AppRouting
             catch { }
         }
 
-        // 2. Scan Registry App Paths
+        // 3. Scan Registry App Paths
         var appPathsKeys = new[]
         {
             @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
@@ -104,11 +139,12 @@ public static class AppRouting
                     var exePath = appKey?.GetValue(null) as string;
                     if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
                     {
-                        var name = Path.GetFileNameWithoutExtension(appKeyName);
-                        var id = name.ToLowerInvariant();
-                        if (!result.ContainsKey(id))
+                        var peName = WindowsAppIdentity.GetFriendlyAppNameFromPath(exePath);
+                        var name = peName != "Unknown" ? peName : Path.GetFileNameWithoutExtension(appKeyName);
+                        var id = Path.GetFileNameWithoutExtension(appKeyName).ToLowerInvariant();
+                        if (!result.ContainsKey(id) && !result.ContainsKey(name.ToLowerInvariant()))
                         {
-                            result[id] = new InstalledApplication(name, id, exePath, [appKeyName]);
+                            result[id] = new InstalledApplication(name, id, exePath, [appKeyName, name]);
                         }
                     }
                 }
@@ -116,7 +152,7 @@ public static class AppRouting
             }
         }
 
-        // 3. Running processes
+        // 4. Running processes with active top-level windows
         try
         {
             foreach (var proc in Process.GetProcesses())
@@ -125,13 +161,14 @@ public static class AppRouting
                 {
                     if (proc.MainWindowHandle != IntPtr.Zero && !string.IsNullOrEmpty(proc.MainWindowTitle))
                     {
-                        var name = proc.ProcessName;
-                        var id = name.ToLowerInvariant();
+                        var friendly = WindowsAppIdentity.GetFriendlyAppName(proc);
+                        var aumid = WindowsAppIdentity.GetAppUserModelId(proc.MainWindowHandle, proc.Id);
+                        var id = friendly.ToLowerInvariant();
                         if (!result.ContainsKey(id))
                         {
                             string exePath = "";
                             try { exePath = proc.MainModule?.FileName ?? ""; } catch { }
-                            result[id] = new InstalledApplication(name, id, exePath);
+                            result[id] = new InstalledApplication(friendly, aumid, exePath, [proc.ProcessName, friendly]);
                         }
                     }
                 }
@@ -139,6 +176,17 @@ public static class AppRouting
             }
         }
         catch { }
+
+        // 5. Ensure File Explorer is canonically pinned to explorer.exe with full domain aliases
+        var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var explorerExe = Path.Combine(winDir, "explorer.exe");
+        if (File.Exists(explorerExe))
+        {
+            var explorerApp = new InstalledApplication("File Explorer", "explorer", explorerExe,
+                ["Windows Explorer", "explorer", "files", "folder", "folders", "volume", "volumes", "directory", "Microsoft.Windows.Explorer"]);
+            result["file explorer"] = explorerApp;
+            result["explorer"] = explorerApp;
+        }
 
         return result.Values.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -172,14 +220,11 @@ public static class AppRouting
                 }
             }
 
-            var name = "Browser";
-            if (progId.Contains("Chrome", StringComparison.OrdinalIgnoreCase)) name = "Google Chrome";
-            else if (progId.Contains("MSEdge", StringComparison.OrdinalIgnoreCase)) name = "Microsoft Edge";
-            else if (progId.Contains("Firefox", StringComparison.OrdinalIgnoreCase)) name = "Mozilla Firefox";
-            else if (progId.Contains("Brave", StringComparison.OrdinalIgnoreCase)) name = "Brave Browser";
-            else if (!string.IsNullOrEmpty(exePath)) name = Path.GetFileNameWithoutExtension(exePath);
+            var name = !string.IsNullOrEmpty(exePath) ? WindowsAppIdentity.GetFriendlyAppNameFromPath(exePath) : "Browser";
+            if (name == "Unknown") name = "Browser";
+            var aumid = !string.IsNullOrEmpty(exePath) ? Path.GetFileNameWithoutExtension(exePath).ToLowerInvariant() : progId.ToLowerInvariant();
 
-            return new InstalledApplication(name, progId.ToLowerInvariant(), exePath, ["Registered default browser", name]);
+            return new InstalledApplication(name, aumid, exePath, ["Registered default browser", name, progId]);
         }
         catch
         {
@@ -187,35 +232,29 @@ public static class AppRouting
         }
     }
 
+    public static bool IsSameApp(string? processName, string? windowTitle, InstalledApplication? app)
+    {
+        if (app == null) return false;
+        return WindowsAppIdentity.IsSameApplication(null, processName, windowTitle, app);
+    }
+
     public static async Task<bool> ActivateAsync(InstalledApplication app, InputPermit permit = default)
     {
         try
         {
             permit.Check();
-            // Check if already running
-            Process? runningProc = null;
-            var targetName = Path.GetFileNameWithoutExtension(app.Url);
 
-            foreach (var proc in Process.GetProcesses())
+            // Locate existing top-level window without launching a duplicate process
+            IntPtr existingHwnd = WindowsAppIdentity.FindExistingTopLevelWindow(app);
+
+            if (existingHwnd != IntPtr.Zero)
             {
-                try
+                using var lease = permit.Begin(effect: true);
+                if (WindowsAppIdentity.IsIconic(existingHwnd))
                 {
-                    if (string.Equals(proc.ProcessName, targetName, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(proc.ProcessName, app.Name, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (proc.MainWindowHandle != IntPtr.Zero)
-                        {
-                            runningProc = proc;
-                            break;
-                        }
-                    }
+                    WindowsAppIdentity.ShowWindow(existingHwnd, WindowsAppIdentity.SW_RESTORE);
                 }
-                catch { }
-            }
-
-            if (runningProc != null)
-            {
-                SetForegroundWindow(runningProc.MainWindowHandle);
+                WindowsAppIdentity.SetForegroundWindow(existingHwnd);
             }
             else
             {
@@ -231,15 +270,17 @@ public static class AppRouting
             for (int i = 0; i < 20; i++)
             {
                 permit.Check();
-                var fgHwnd = GetForegroundWindow();
+                var fgHwnd = WindowsAppIdentity.GetForegroundWindow();
                 if (fgHwnd != IntPtr.Zero)
                 {
-                    GetWindowThreadProcessId(fgHwnd, out var fgPid);
+                    WindowsAppIdentity.GetWindowThreadProcessId(fgHwnd, out var fgPid);
                     try
                     {
-                        var fgProc = Process.GetProcessById((int)fgPid);
-                        if (string.Equals(fgProc.ProcessName, targetName, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(fgProc.ProcessName, app.Name, StringComparison.OrdinalIgnoreCase))
+                        var fgFriendly = WindowsAppIdentity.GetFriendlyAppName((int)fgPid);
+                        var fgProcName = Process.GetProcessById((int)fgPid).ProcessName;
+                        string fgTitle = WindowsAppIdentity.GetWindowTitle(fgHwnd);
+
+                        if (WindowsAppIdentity.IsSameApplication(fgFriendly, fgProcName, fgTitle, app))
                         {
                             return true;
                         }

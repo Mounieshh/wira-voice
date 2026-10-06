@@ -91,7 +91,7 @@ public class SpeechEngineTests
     public async Task WhisperLocalEngine_CanStartWithLocalModel()
     {
         EnvironmentConfig.Initialize();
-        var fullModelPath = System.IO.Path.GetFullPath(@"..\..\..\..\models\ggml-base.bin");
+        var fullModelPath = System.IO.Path.GetFullPath(@"..\..\..\..\models\ggml-base.en.bin");
         Environment.SetEnvironmentVariable("WHISPER_MODEL_PATH", fullModelPath);
         var audio = new WiraVoice.Core.Audio.AudioCaptureService();
         var engine = new WhisperLocalEngine(audio);
@@ -100,5 +100,38 @@ public class SpeechEngineTests
         await engine.StartAsync();
         Assert.True(engine.IsListening, status ?? "No status");
         await engine.StopAsync();
+    }
+
+    [Fact]
+    public async Task WhisperProcessor_FloatSamples_SucceedsWithoutWavHeader()
+    {
+        EnvironmentConfig.Initialize();
+        var fullModelPath = @"D:\Vibe_\wira-voice\models\ggml-base.en.bin";
+        using var factory = Whisper.net.WhisperFactory.FromPath(fullModelPath);
+        using var processor = factory.CreateBuilder().WithLanguage("en").Build();
+
+        float[] samples = new float[16000]; // 1 sec of silence float samples
+
+        var sb = new System.Text.StringBuilder();
+        await foreach (var res in processor.ProcessAsync(samples))
+        {
+            sb.Append(res.Text);
+        }
+
+        // Should complete smoothly without throwing CorruptedWaveException
+        Assert.NotNull(sb.ToString());
+    }
+
+    [Fact]
+    public void WhisperLocalEngine_CleanTranscript_FiltersSpecialTokens()
+    {
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("[BLANK_AUDIO]"));
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("[BLANK AUDIO]"));
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("[SILENCE]"));
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("[MUSIC]"));
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("(applause)"));
+        Assert.Equal("", WhisperLocalEngine.CleanTranscript("   "));
+        Assert.Equal("click submit", WhisperLocalEngine.CleanTranscript("click submit"));
+        Assert.Equal("click submit", WhisperLocalEngine.CleanTranscript("[BLANK_AUDIO] click submit"));
     }
 }

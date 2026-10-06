@@ -19,12 +19,6 @@ namespace WiraVoice.Core.Automation;
 /// </summary>
 public sealed class UiaReader : IUiaReader
 {
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
     private readonly UIA3Automation _automation = new();
     private bool _disposed = false;
 
@@ -62,13 +56,15 @@ public sealed class UiaReader : IUiaReader
         return Task.Run(() =>
         {
             var sw = Stopwatch.StartNew();
-            IntPtr hwnd = GetForegroundWindow();
+            IntPtr hwnd = WindowsAppIdentity.GetForegroundWindow();
             int pid = targetPid ?? 0;
             string processName = "Unknown";
+            string friendlyAppName = "Unknown";
+            string aumid = "";
 
             if (hwnd != IntPtr.Zero)
             {
-                GetWindowThreadProcessId(hwnd, out uint fgPid);
+                WindowsAppIdentity.GetWindowThreadProcessId(hwnd, out uint fgPid);
                 if (!targetPid.HasValue) pid = (int)fgPid;
             }
 
@@ -78,6 +74,8 @@ public sealed class UiaReader : IUiaReader
                 {
                     using var proc = Process.GetProcessById(pid);
                     processName = proc.ProcessName;
+                    friendlyAppName = WindowsAppIdentity.GetFriendlyAppName(proc);
+                    aumid = WindowsAppIdentity.GetAppUserModelId(hwnd, pid);
                     if (targetPid.HasValue && proc.MainWindowHandle != IntPtr.Zero)
                     {
                         hwnd = proc.MainWindowHandle;
@@ -86,9 +84,27 @@ public sealed class UiaReader : IUiaReader
             }
             catch { }
 
+            if (hwnd != IntPtr.Zero)
+            {
+                var className = WindowsAppIdentity.GetWindowClassName(hwnd);
+                if (WindowsAppIdentity.IsShellInfrastructureWindow(hwnd, className))
+                {
+                    friendlyAppName = "Windows Shell";
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(friendlyAppName) || friendlyAppName == "Unknown")
+            {
+                friendlyAppName = processName;
+            }
+            if (string.IsNullOrWhiteSpace(aumid))
+            {
+                aumid = processName;
+            }
+
             if (hwnd == IntPtr.Zero)
             {
-                return new AXSnapshot(pid, processName, "No Active Window", [], false, readSeconds: sw.Elapsed.TotalSeconds);
+                return new AXSnapshot(pid, friendlyAppName, "No Active Window", [], false, readSeconds: sw.Elapsed.TotalSeconds, appUserModelID: aumid);
             }
 
             AutomationElement? rootElement = null;
@@ -98,16 +114,21 @@ public sealed class UiaReader : IUiaReader
             }
             catch
             {
-                return new AXSnapshot(pid, processName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd);
+                return new AXSnapshot(pid, friendlyAppName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd, appUserModelID: aumid);
             }
 
             if (rootElement == null)
             {
-                return new AXSnapshot(pid, processName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd);
+                return new AXSnapshot(pid, friendlyAppName, "Unavailable", [], true, readSeconds: sw.Elapsed.TotalSeconds, windowHandle: hwnd, appUserModelID: aumid);
             }
 
             string windowTitle = "";
-            try { windowTitle = rootElement.Name ?? processName; } catch { windowTitle = processName; }
+            try { windowTitle = rootElement.Name ?? friendlyAppName; } catch { windowTitle = friendlyAppName; }
+
+            if (processName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(windowTitle))
+            {
+                friendlyAppName = windowTitle;
+            }
 
             var nodes = new List<AXNode>();
             var handles = new List<object?>();
@@ -244,15 +265,16 @@ public sealed class UiaReader : IUiaReader
             bool partial = queue.Count > 0 || nodes.Count >= maxNodes;
             return new AXSnapshot(
                 pid,
-                processName,
+                friendlyAppName,
                 windowTitle,
                 nodes,
                 partial,
                 handles,
                 readSeconds: sw.Elapsed.TotalSeconds,
                 windowHandle: hwnd,
-                bundleID: processName,
-                coverage: coverageGaps
+                bundleID: aumid,
+                coverage: coverageGaps,
+                appUserModelID: aumid
             );
         }, ct);
     }
