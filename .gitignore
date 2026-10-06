@@ -35,6 +35,8 @@ computah/
 # Build Outputs & Binaries (.NET / C#)
 bin/
 obj/
+TestResults/
+*.coverage
 *.exe
 *.dll
 *.pdb
@@ -44,12 +46,14 @@ obj/
 *.sln.docstates
 .vs/
 .vscode/
+.idea/
 
 # Logs, Diagnostics & Output Traces
 logs/
 outputs/
 *.log
 log.txt
+*.wav
 /diagnostics/
 
 # Operating System Files
