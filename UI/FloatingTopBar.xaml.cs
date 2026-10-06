@@ -145,28 +145,6 @@ public partial class FloatingTopBar : Window
         await _viewModel.SetEngineModeAsync(SpeechEngineMode.LocalWhisper);
     }
 
-    private void OnClearTranscriptClicked(object sender, RoutedEventArgs e)
-    {
-        _viewModel.ClearTranscript();
-    }
-
-    private void OnOpenDiagnosticsClicked(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var tempHtml = Path.Combine(Path.GetTempPath(), "architecture-review-20261005.html");
-            if (File.Exists(tempHtml))
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = tempHtml,
-                    UseShellExecute = true
-                });
-            }
-        }
-        catch { }
-    }
-
     private void OnExitClicked(object sender, RoutedEventArgs e)
     {
         Close();

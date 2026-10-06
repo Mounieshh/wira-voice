@@ -107,7 +107,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
         }
     }
 
-    public string EngineModeDisplay => EngineMode == SpeechEngineMode.CloudDeepgram ? "Cloud (Deepgram Flux)" : "Local (Whisper.cpp)";
+    public string EngineModeDisplay => EngineMode == SpeechEngineMode.CloudDeepgram ? "Cloud (Deepgram)" : "Local (Whisper)";
     public bool IsCloudMode => EngineMode == SpeechEngineMode.CloudDeepgram;
     public bool IsLocalMode => EngineMode == SpeechEngineMode.LocalWhisper;
 

@@ -238,10 +238,10 @@
                         <Ellipse Width="3" Height="3" Fill="#CCCCCC" Margin="1,0"/>
                     </StackPanel>
 
-                    <!-- Context Menu for Quick Engine Switching & Diagnostics -->
+                    <!-- Context Menu for Quick Engine Switching & Exit -->
                     <Button.ContextMenu>
                         <ContextMenu x:Name="NotchContextMenu">
-                            <MenuItem Header="Cloud (Deepgram Flux)" 
+                            <MenuItem Header="Cloud (Deepgram)" 
                                       Click="OnSelectCloudEngineClicked">
                                 <MenuItem.Icon>
                                     <TextBlock Text="✓" Foreground="#38BDF8" FontWeight="Bold" 
@@ -249,7 +249,7 @@
                                 </MenuItem.Icon>
                             </MenuItem>
 
-                            <MenuItem Header="Local (Whisper.cpp GPU)" 
+                            <MenuItem Header="Local (Whisper)" 
                                       Click="OnSelectLocalEngineClicked">
                                 <MenuItem.Icon>
                                     <TextBlock Text="✓" Foreground="#38BDF8" FontWeight="Bold" 
@@ -259,12 +259,7 @@
 
                             <Separator/>
 
-                            <MenuItem Header="Clear Transcript" Click="OnClearTranscriptClicked"/>
-                            <MenuItem Header="Open Diagnostics Report" Click="OnOpenDiagnosticsClicked"/>
-
-                            <Separator/>
-
-                            <MenuItem Header="Exit Wira Voice" Click="OnExitClicked"/>
+                            <MenuItem Header="Exit" Click="OnExitClicked"/>
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
