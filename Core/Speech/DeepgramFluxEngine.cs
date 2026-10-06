@@ -18,6 +18,8 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
     private readonly AudioCaptureService _audioCapture;
     private readonly Func<string>? _apiKeyProvider;
     private bool _isListening = false;
+    private volatile bool _isStopping = false;
+    private bool _turnStarted = false;
     private int _turnCounter = 0;
     private string _activeTurnId = "turn_1";
     private string _accumulatedTranscript = string.Empty;
@@ -68,6 +70,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                 lock (_lock)
                 {
                     turnId = _activeTurnId;
+                    _turnStarted = true;
                 }
                 Console.WriteLine($"[SpeechEngine:Deepgram] Speech started (turn: {turnId})");
                 OnStatusChanged?.Invoke("Listening (speaking)…");
@@ -106,13 +109,11 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                 SampleRate = 16000,
                 Channels = 1,
                 InterimResults = true,
-                VadEvents = true,
-                EndPointing = "350",
-                UtteranceEnd = "1000"
             };
 
             OnStatusChanged?.Invoke("Connecting to Deepgram Nova-3…");
-            bool connected = await _liveClient.Connect(liveSchema);
+            using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            bool connected = await _liveClient.Connect(liveSchema, connectCts);
             if (!connected)
             {
                 OnStatusChanged?.Invoke("Failed to connect to Deepgram Nova-3.");
@@ -121,6 +122,8 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
             }
 
             _isListening = true;
+            _isStopping = false;
+            _turnStarted = false;
             _turnCounter = 1;
             _activeTurnId = $"deepgram_turn_{_turnCounter}";
             _accumulatedTranscript = string.Empty;
@@ -137,7 +140,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
 
     private void OnAudioChunk(byte[] pcmData)
     {
-        if (!_isListening || _liveClient == null || !_liveClient.IsConnected()) return;
+        if (!_isListening || _isStopping || _liveClient == null || !_liveClient.IsConnected()) return;
 
         try
         {
@@ -157,12 +160,19 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
         string? interimHypothesis = null;
         string? eagerTranscript = null;
         string currentTurnId;
+        bool emitStartOfTurn = false;
 
         lock (_lock)
         {
             currentTurnId = _activeTurnId;
             bool isFinal = e.IsFinal == true;
             bool speechFinal = e.SpeechFinal == true;
+
+            if (!string.IsNullOrWhiteSpace(segmentText) && !_turnStarted)
+            {
+                _turnStarted = true;
+                emitStartOfTurn = true;
+            }
 
             if (isFinal)
             {
@@ -173,7 +183,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                         : $"{_accumulatedTranscript} {segmentText}";
                 }
 
-                if (speechFinal)
+                if (speechFinal || e.FromFinalize == true)
                 {
                     shouldFinalize = true;
                 }
@@ -188,6 +198,12 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                     ? segmentText
                     : $"{_accumulatedTranscript} {segmentText}".Trim();
             }
+        }
+
+        if (emitStartOfTurn)
+        {
+            OnStatusChanged?.Invoke("Listening (speaking)…");
+            OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, currentTurnId));
         }
 
         if (shouldFinalize)
@@ -214,6 +230,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
         {
             rawTranscript = _accumulatedTranscript.Trim();
             _accumulatedTranscript = string.Empty;
+            _turnStarted = false;
 
             if (string.IsNullOrWhiteSpace(rawTranscript)) return;
 
@@ -241,6 +258,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
     public async Task StopAsync()
     {
         _isListening = false;
+        _isStopping = true;
         _audioCapture.Stop();
 
         try
@@ -250,13 +268,17 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                 await _liveClient.Stop();
                 _liveClient = null;
             }
-            Library.Terminate();
         }
         catch { }
+        finally
+        {
+            _isStopping = false;
+        }
 
         lock (_lock)
         {
             _accumulatedTranscript = string.Empty;
+            _turnStarted = false;
         }
 
         OnStatusChanged?.Invoke("Ready");

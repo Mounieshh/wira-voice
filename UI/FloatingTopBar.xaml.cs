@@ -180,6 +180,7 @@ public partial class FloatingTopBar : Window
         {
             await _coordinator.DisposeAsync();
         }
+        try { Deepgram.Library.Terminate(); } catch { }
         Application.Current?.Shutdown(0);
     }
 }

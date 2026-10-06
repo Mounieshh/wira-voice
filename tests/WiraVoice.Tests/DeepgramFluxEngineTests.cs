@@ -8,6 +8,7 @@ using Xunit;
 
 namespace WiraVoice.Tests;
 
+[Collection("Deepgram")]
 public class DeepgramFluxEngineTests
 {
     [Fact]
@@ -50,7 +51,7 @@ public class DeepgramFluxEngineTests
     }
 
     [Fact]
-    public void DeepgramLiveSchema_ConfiguresNova3AndVadOptions()
+    public void DeepgramLiveSchema_ConfiguresNova3StreamingOptions()
     {
         var schema = new LiveSchema
         {
@@ -61,10 +62,7 @@ public class DeepgramFluxEngineTests
             Encoding = "linear16",
             SampleRate = 16000,
             Channels = 1,
-            InterimResults = true,
-            VadEvents = true,
-            EndPointing = "350",
-            UtteranceEnd = "1000"
+            InterimResults = true
         };
 
         Assert.Equal("nova-3", schema.Model);
@@ -75,8 +73,5 @@ public class DeepgramFluxEngineTests
         Assert.Equal(16000, schema.SampleRate);
         Assert.Equal(1, schema.Channels);
         Assert.True(schema.InterimResults);
-        Assert.True(schema.VadEvents);
-        Assert.Equal("350", schema.EndPointing);
-        Assert.Equal("1000", schema.UtteranceEnd);
     }
 }
