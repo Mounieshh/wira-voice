@@ -98,7 +98,7 @@ public static class AXActor
                 return $"Dispatched pressClick to {candidate.Description} at ({centerX},{centerY})";
 
             case AXOperation.TypeText:
-                if (node.NativeElement is AutomationElement typeEl && typeEl.Patterns.Value.IsSupported && !typeEl.Patterns.Value.Pattern.IsReadOnly)
+                if (!IsBrowserOmnibox(candidate, node) && node.NativeElement is AutomationElement typeEl && typeEl.Patterns.Value.IsSupported && !typeEl.Patterns.Value.Pattern.IsReadOnly)
                 {
                     permit.Perform(() =>
                     {
@@ -134,7 +134,7 @@ public static class AXActor
                 }
 
             case AXOperation.ReplaceText:
-                if (node.NativeElement is AutomationElement repEl && repEl.Patterns.Value.IsSupported && !repEl.Patterns.Value.Pattern.IsReadOnly)
+                if (!IsBrowserOmnibox(candidate, node) && node.NativeElement is AutomationElement repEl && repEl.Patterns.Value.IsSupported && !repEl.Patterns.Value.Pattern.IsReadOnly)
                 {
                     permit.Perform(() =>
                     {
@@ -462,12 +462,32 @@ public static class AXActor
         }
     }
 
-    private static bool IsAutoSubmitControl(AXCandidate candidate, AXNode node)
+    public static bool IsBrowserOmnibox(AXCandidate candidate, AXNode node)
     {
-        return candidate.Description.Contains("Address Bar", StringComparison.OrdinalIgnoreCase) ||
-               candidate.Description.Contains("Search Box", StringComparison.OrdinalIgnoreCase) ||
-               candidate.Description.Contains("Search Field", StringComparison.OrdinalIgnoreCase) ||
+        string desc = candidate.Description ?? "";
+        string label = node.Label ?? "";
+
+        return desc.Contains("Address and search bar", StringComparison.OrdinalIgnoreCase) ||
+               desc.Contains("Address bar", StringComparison.OrdinalIgnoreCase) ||
+               desc.Contains("Omnibox", StringComparison.OrdinalIgnoreCase) ||
+               label.Contains("Address and search bar", StringComparison.OrdinalIgnoreCase) ||
+               label.Contains("Address bar", StringComparison.OrdinalIgnoreCase) ||
+               label.Contains("Omnibox", StringComparison.OrdinalIgnoreCase) ||
+               label.Contains("Search or enter web address", StringComparison.OrdinalIgnoreCase) ||
+               label.Contains("Search or enter address", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsAutoSubmitControl(AXCandidate candidate, AXNode node)
+    {
+        if (IsBrowserOmnibox(candidate, node)) return true;
+
+        string desc = candidate.Description ?? "";
+        string label = node.Label ?? "";
+
+        return desc.Contains("Search Box", StringComparison.OrdinalIgnoreCase) ||
+               desc.Contains("Search Field", StringComparison.OrdinalIgnoreCase) ||
+               desc.Contains("Search bar", StringComparison.OrdinalIgnoreCase) ||
                node.Role == "AXSearchField" ||
-               (node.Role == "AXTextField" && (node.Label.Contains("Search", StringComparison.OrdinalIgnoreCase) || node.Label.Contains("Address", StringComparison.OrdinalIgnoreCase)));
+               (node.Role == "AXTextField" && (label.Contains("Search", StringComparison.OrdinalIgnoreCase) || label.Contains("Address", StringComparison.OrdinalIgnoreCase)));
     }
 }

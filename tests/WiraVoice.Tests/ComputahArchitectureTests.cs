@@ -519,4 +519,55 @@ public class ComputahArchitectureTests
         var result = AXActor.Perform(candidate, snapshot, "hello", permit, physicalActivation: false);
         Assert.Contains("Dispatched typeText \"hello\"", result);
     }
+
+    [Fact]
+    public void WhisperLocalEngine_Thresholds_DifferentiateAmbientNoiseFromSpeech()
+    {
+        // Ambient noise is between 0.040 and 0.080 RMS
+        double ambientNoiseLevel = 0.075;
+        // Vocal speech is typically >= 0.120 RMS
+        double speechLevel = 0.150;
+
+        Assert.True(WhisperLocalEngine.SpeechStartThreshold > ambientNoiseLevel,
+            "SpeechStartThreshold must be higher than ambient room noise to prevent false turn triggers.");
+        Assert.True(WhisperLocalEngine.SpeechStartThreshold < speechLevel,
+            "SpeechStartThreshold must be lower than normal human speaking volume.");
+        Assert.Equal(0.085, WhisperLocalEngine.SpeechStartThreshold, precision: 3);
+    }
+
+    [Fact]
+    public void AXActor_IsBrowserOmnibox_IdentifiesChromeAndEdgeAddressBars()
+    {
+        var chromeCandidate = new AXCandidate(
+            id: "n43",
+            nodeID: 43,
+            operation: AXOperation.TypeText,
+            description: "AXTextField: Address and search bar [typeText]; region=AXToolbar",
+            groupID: 0);
+        var chromeNode = new AXNode
+        {
+            Id = 43,
+            Role = "AXTextField",
+            Label = "Address and search bar"
+        };
+
+        Assert.True(AXActor.IsBrowserOmnibox(chromeCandidate, chromeNode));
+        Assert.True(AXActor.IsAutoSubmitControl(chromeCandidate, chromeNode));
+
+        var standardNode = new AXNode
+        {
+            Id = 10,
+            Role = "AXTextField",
+            Label = "First Name"
+        };
+        var standardCandidate = new AXCandidate(
+            id: "n10",
+            nodeID: 10,
+            operation: AXOperation.TypeText,
+            description: "Text field: First Name",
+            groupID: 0);
+
+        Assert.False(AXActor.IsBrowserOmnibox(standardCandidate, standardNode));
+        Assert.False(AXActor.IsAutoSubmitControl(standardCandidate, standardNode));
+    }
 }

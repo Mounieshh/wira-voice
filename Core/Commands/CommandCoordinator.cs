@@ -67,7 +67,7 @@ public sealed class CommandCoordinator : IAsyncDisposable
         switch (turnEvent.Type)
         {
             case SpeechTurnType.StartOfTurn:
-                BeginTurn(turnEvent.TurnId);
+                OnStatus?.Invoke("Listening to voice…", false);
                 break;
             case SpeechTurnType.EagerEndOfTurn:
                 PrepareEager(turnEvent.Utterance, turnEvent.TurnId);
