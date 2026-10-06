@@ -12,13 +12,31 @@ public static class EnvironmentConfig
     private static bool _loaded = false;
     private static readonly object _lock = new();
 
-    public static string DeepgramApiKey { get; private set; } = string.Empty;
+    private static string _deepgramApiKey = string.Empty;
+    public static string DeepgramApiKey
+    {
+        get
+        {
+            var envVal = Environment.GetEnvironmentVariable("DEEPGRAM_API_KEY");
+            return envVal != null ? envVal : _deepgramApiKey;
+        }
+        private set => _deepgramApiKey = value;
+    }
     public static string JevProvider { get; private set; } = "openrouter";
     public static string OpenRouterApiKey { get; private set; } = string.Empty;
     public static string OpenRouterBaseUrl { get; private set; } = "https://openrouter.ai/api/v1";
     public static string JevModel { get; private set; } = "jev-1.13.0";
     public static string TypeSafeApiKey { get; private set; } = string.Empty;
     public static string WhisperModelPath { get; private set; } = "models/ggml-base.en.bin";
+
+    public static void Reload()
+    {
+        lock (_lock)
+        {
+            _loaded = false;
+            Initialize();
+        }
+    }
 
     public static void Initialize()
     {

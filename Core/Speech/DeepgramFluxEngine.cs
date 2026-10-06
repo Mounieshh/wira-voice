@@ -1,27 +1,26 @@
 using System;
-using System.IO;
-using System.Net.WebSockets;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Deepgram;
+using Deepgram.Models.Listen.v2.WebSocket;
 using WiraVoice.Core.Audio;
 using WiraVoice.Core.Config;
 
 namespace WiraVoice.Core.Speech;
 
 /// <summary>
-/// Cloud Speech Engine streaming 16kHz PCM16 audio to Deepgram Flux over WebSockets.
-/// Delivers conversational turn lifecycle events: StartOfTurn, EagerEndOfTurn, TurnResumed, EndOfTurn.
+/// Cloud Speech Engine streaming 16kHz PCM16 audio to Deepgram Nova-3 using the official Deepgram .NET SDK.
+/// Delivers real-time neural transcription, live VAD endpointing, and turn lifecycle events.
 /// </summary>
 public sealed class DeepgramFluxEngine : ISpeechEngine
 {
-    private ClientWebSocket? _webSocket;
+    private ListenWebSocketClient? _liveClient;
     private readonly AudioCaptureService _audioCapture;
-    private CancellationTokenSource? _cts;
-    private Task? _receiveTask;
+    private readonly Func<string>? _apiKeyProvider;
     private bool _isListening = false;
-    private string _activeTurnId = string.Empty;
+    private int _turnCounter = 0;
+    private string _activeTurnId = "turn_1";
+    private string _accumulatedTranscript = string.Empty;
     private readonly object _lock = new();
 
     public event Action<SpeechTurnEvent>? OnSpeechEvent;
@@ -32,9 +31,10 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
     public bool IsListening => _isListening;
     public SpeechEngineMode Mode => SpeechEngineMode.CloudDeepgram;
 
-    public DeepgramFluxEngine(AudioCaptureService audioCapture)
+    public DeepgramFluxEngine(AudioCaptureService audioCapture, Func<string>? apiKeyProvider = null)
     {
         _audioCapture = audioCapture;
+        _apiKeyProvider = apiKeyProvider;
         _audioCapture.OnAudioDataAvailable += OnAudioChunk;
         _audioCapture.OnAudioLevel += level => OnAudioLevel?.Invoke(level);
         _audioCapture.OnError += err => OnStatusChanged?.Invoke(err);
@@ -44,7 +44,7 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
     {
         if (_isListening) return;
 
-        string apiKey = EnvironmentConfig.DeepgramApiKey;
+        string apiKey = _apiKeyProvider != null ? _apiKeyProvider() : EnvironmentConfig.DeepgramApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             OnStatusChanged?.Invoke("Deepgram API Key is missing. Set DEEPGRAM_API_KEY in .env");
@@ -53,19 +53,79 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
 
         try
         {
-            _cts = new CancellationTokenSource();
-            _webSocket = new ClientWebSocket();
-            _webSocket.Options.SetRequestHeader("Authorization", $"Token {apiKey}");
+            Library.Initialize();
+            _liveClient = new ListenWebSocketClient(apiKey);
 
-            var uri = new Uri("wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&eager_eot_threshold=0.5&eot_threshold=0.7");
-            OnStatusChanged?.Invoke("Connecting to Deepgram Flux…");
+            await _liveClient.Subscribe(new EventHandler<OpenResponse>((sender, e) =>
+            {
+                OnStatusChanged?.Invoke("Listening (Cloud Deepgram Nova-3)…");
+                Console.WriteLine("[SpeechEngine:Deepgram] Connected to Deepgram Nova-3 WebSocket.");
+            }));
 
-            await _webSocket.ConnectAsync(uri, _cts.Token);
+            await _liveClient.Subscribe(new EventHandler<SpeechStartedResponse>((sender, e) =>
+            {
+                string turnId;
+                lock (_lock)
+                {
+                    turnId = _activeTurnId;
+                }
+                Console.WriteLine($"[SpeechEngine:Deepgram] Speech started (turn: {turnId})");
+                OnStatusChanged?.Invoke("Listening (speaking)…");
+                OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, turnId));
+            }));
+
+            await _liveClient.Subscribe(new EventHandler<ResultResponse>((sender, e) =>
+            {
+                OnResultResponse(e);
+            }));
+
+            await _liveClient.Subscribe(new EventHandler<UtteranceEndResponse>((sender, e) =>
+            {
+                FinalizeTurn();
+            }));
+
+            await _liveClient.Subscribe(new EventHandler<CloseResponse>((sender, e) =>
+            {
+                Console.WriteLine("[SpeechEngine:Deepgram] Connection closed.");
+                OnStatusChanged?.Invoke("Deepgram disconnected");
+            }));
+
+            await _liveClient.Subscribe(new EventHandler<ErrorResponse>((sender, e) =>
+            {
+                Console.WriteLine($"[SpeechEngine:Deepgram] Error: {e.Message}");
+                OnStatusChanged?.Invoke($"Deepgram error: {e.Message}");
+            }));
+
+            var liveSchema = new LiveSchema()
+            {
+                Model = "nova-3",
+                Language = "en",
+                SmartFormat = true,
+                Punctuate = true,
+                Encoding = "linear16",
+                SampleRate = 16000,
+                Channels = 1,
+                InterimResults = true,
+                VadEvents = true,
+                EndPointing = "350",
+                UtteranceEnd = "1000"
+            };
+
+            OnStatusChanged?.Invoke("Connecting to Deepgram Nova-3…");
+            bool connected = await _liveClient.Connect(liveSchema);
+            if (!connected)
+            {
+                OnStatusChanged?.Invoke("Failed to connect to Deepgram Nova-3.");
+                await StopAsync();
+                return;
+            }
+
             _isListening = true;
-            OnStatusChanged?.Invoke("Listening (Cloud Deepgram)…");
+            _turnCounter = 1;
+            _activeTurnId = $"deepgram_turn_{_turnCounter}";
+            _accumulatedTranscript = string.Empty;
 
             _audioCapture.Start();
-            _receiveTask = Task.Run(() => ReceiveLoopAsync(_cts.Token));
         }
         catch (Exception ex)
         {
@@ -77,119 +137,105 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
 
     private void OnAudioChunk(byte[] pcmData)
     {
-        if (!_isListening || _webSocket?.State != WebSocketState.Open) return;
+        if (!_isListening || _liveClient == null || !_liveClient.IsConnected()) return;
 
         try
         {
-            _webSocket.SendAsync(
-                new ArraySegment<byte>(pcmData),
-                WebSocketMessageType.Binary,
-                true,
-                CancellationToken.None
-            ).Wait(100);
+            _liveClient.Send(pcmData, pcmData.Length);
         }
         catch { }
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken ct)
+    private void OnResultResponse(ResultResponse e)
     {
-        var buffer = new byte[8192];
-        var ms = new MemoryStream();
+        if (e.Channel?.Alternatives == null || e.Channel.Alternatives.Count == 0) return;
 
-        while (!ct.IsCancellationRequested && _webSocket?.State == WebSocketState.Open)
+        var alt = e.Channel.Alternatives[0];
+        string segmentText = alt.Transcript?.Trim() ?? string.Empty;
+
+        bool shouldFinalize = false;
+        string? interimHypothesis = null;
+        string? eagerTranscript = null;
+        string currentTurnId;
+
+        lock (_lock)
         {
-            try
-            {
-                ms.SetLength(0);
-                WebSocketReceiveResult result;
-                do
-                {
-                    result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        await StopAsync();
-                        return;
-                    }
-                    ms.Write(buffer, 0, result.Count);
-                } while (!result.EndOfMessage);
+            currentTurnId = _activeTurnId;
+            bool isFinal = e.IsFinal == true;
+            bool speechFinal = e.SpeechFinal == true;
 
-                string json = Encoding.UTF8.GetString(ms.ToArray());
-                ProcessMessage(json);
-            }
-            catch (OperationCanceledException)
+            if (isFinal)
             {
-                break;
+                if (!string.IsNullOrWhiteSpace(segmentText))
+                {
+                    _accumulatedTranscript = string.IsNullOrWhiteSpace(_accumulatedTranscript)
+                        ? segmentText
+                        : $"{_accumulatedTranscript} {segmentText}";
+                }
+
+                if (speechFinal)
+                {
+                    shouldFinalize = true;
+                }
+                else if (!string.IsNullOrWhiteSpace(_accumulatedTranscript))
+                {
+                    eagerTranscript = _accumulatedTranscript;
+                }
             }
-            catch (Exception ex)
+            else
             {
-                OnStatusChanged?.Invoke($"Speech receive error: {ex.Message}");
-                break;
+                interimHypothesis = string.IsNullOrWhiteSpace(_accumulatedTranscript)
+                    ? segmentText
+                    : $"{_accumulatedTranscript} {segmentText}".Trim();
             }
+        }
+
+        if (shouldFinalize)
+        {
+            FinalizeTurn();
+        }
+        else if (!string.IsNullOrWhiteSpace(eagerTranscript))
+        {
+            OnTranscript?.Invoke(eagerTranscript, false, currentTurnId);
+            OnSpeechEvent?.Invoke(new SpeechTurnEvent(eagerTranscript, SpeechTurnType.EagerEndOfTurn, currentTurnId));
+        }
+        else if (!string.IsNullOrWhiteSpace(interimHypothesis))
+        {
+            OnTranscript?.Invoke(interimHypothesis, false, currentTurnId);
         }
     }
 
-    private void ProcessMessage(string json)
+    private void FinalizeTurn()
     {
-        try
+        string rawTranscript;
+        string currentTurnId;
+
+        lock (_lock)
         {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
+            rawTranscript = _accumulatedTranscript.Trim();
+            _accumulatedTranscript = string.Empty;
 
-            if (root.TryGetProperty("type", out var typeProp))
-            {
-                string msgType = typeProp.GetString() ?? string.Empty;
-                if (msgType == "Error")
-                {
-                    string description = root.TryGetProperty("description", out var desc) ? desc.GetString() ?? "Unknown error" : "Unknown error";
-                    OnStatusChanged?.Invoke($"Deepgram error: {description}");
-                    return;
-                }
+            if (string.IsNullOrWhiteSpace(rawTranscript)) return;
 
-                if (msgType == "TurnInfo")
-                {
-                    string eventType = root.TryGetProperty("event", out var ev) ? ev.GetString() ?? "" : "";
-                    string transcript = root.TryGetProperty("transcript", out var tr) ? tr.GetString() ?? "" : "";
-                    int turnIndex = root.TryGetProperty("turn_index", out var ti) ? ti.GetInt32() : 0;
-                    string turnId = $"turn_{turnIndex}";
-                    _activeTurnId = turnId;
-
-                    switch (eventType)
-                    {
-                        case "StartOfTurn":
-                            OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, turnId));
-                            break;
-
-                        case "EagerEndOfTurn":
-                            if (!string.IsNullOrWhiteSpace(transcript))
-                            {
-                                Console.WriteLine($"[SpeechEngine:Deepgram] Eager transcript: \"{transcript}\" (turn: {turnId})");
-                                OnTranscript?.Invoke(transcript, false, turnId);
-                                OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.EagerEndOfTurn, turnId));
-                            }
-                            break;
-
-                        case "TurnResumed":
-                            Console.WriteLine($"[SpeechEngine:Deepgram] Turn resumed (user continued speaking)");
-                            OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.TurnResumed, turnId));
-                            break;
-
-                        case "EndOfTurn":
-                            Console.WriteLine($"[SpeechEngine:Deepgram] Final transcript: \"{transcript}\" (turn: {turnId})");
-                            OnTranscript?.Invoke(transcript, true, turnId);
-                            OnSpeechEvent?.Invoke(new SpeechTurnEvent(transcript, SpeechTurnType.EndOfTurn, turnId));
-                            break;
-
-                        default:
-                            if (!string.IsNullOrWhiteSpace(transcript))
-                            {
-                                OnTranscript?.Invoke(transcript, false, turnId);
-                            }
-                            break;
-                    }
-                }
-            }
+            currentTurnId = _activeTurnId;
+            _turnCounter++;
+            _activeTurnId = $"deepgram_turn_{_turnCounter}";
         }
-        catch { }
+
+        string cleanTranscript = WhisperLocalEngine.CleanTranscript(rawTranscript);
+
+        if (!string.IsNullOrWhiteSpace(cleanTranscript))
+        {
+            Console.WriteLine($"[SpeechEngine:Deepgram] Transcribed: \"{cleanTranscript}\" (turn: {currentTurnId})");
+            OnTranscript?.Invoke(cleanTranscript, true, currentTurnId);
+            OnSpeechEvent?.Invoke(new SpeechTurnEvent(cleanTranscript, SpeechTurnType.EndOfTurn, currentTurnId));
+        }
+        else
+        {
+            Console.WriteLine($"[SpeechEngine:Deepgram] Non-speech audio detected (raw: \"{rawTranscript}\"). Discarding noise.");
+        }
+
+        OnStatusChanged?.Invoke("Listening (Cloud Deepgram Nova-3)…");
     }
 
     public async Task StopAsync()
@@ -199,18 +245,19 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
 
         try
         {
-            _cts?.Cancel();
-            if (_webSocket != null && _webSocket.State == WebSocketState.Open)
+            if (_liveClient != null)
             {
-                await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+                await _liveClient.Stop();
+                _liveClient = null;
             }
+            Library.Terminate();
         }
         catch { }
 
-        _webSocket?.Dispose();
-        _webSocket = null;
-        _cts?.Dispose();
-        _cts = null;
+        lock (_lock)
+        {
+            _accumulatedTranscript = string.Empty;
+        }
 
         OnStatusChanged?.Invoke("Ready");
         OnAudioLevel?.Invoke(0.0);

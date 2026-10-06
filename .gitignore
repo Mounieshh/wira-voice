@@ -49,6 +49,7 @@ obj/
 logs/
 outputs/
 *.log
+log.txt
 /diagnostics/
 
 # Operating System Files
