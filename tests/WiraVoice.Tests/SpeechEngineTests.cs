@@ -56,6 +56,13 @@ public class FakeSpeechEngine : ISpeechEngine
 public class SpeechEngineTests
 {
     [Fact]
+    public void DeepgramFluxEngine_EndpointingConstants_AreConfiguredForSpeechContinuity()
+    {
+        Assert.Equal("1000", DeepgramFluxEngine.DefaultEndpointingMs);
+        Assert.Equal("1200", DeepgramFluxEngine.DefaultUtteranceEndMs);
+    }
+
+    [Fact]
     public void EnvironmentConfig_InitializesWithDefaults()
     {
         EnvironmentConfig.Initialize();

@@ -14,6 +14,17 @@ namespace WiraVoice.Core.Speech;
 /// </summary>
 public sealed class DeepgramFluxEngine : ISpeechEngine
 {
+    /// <summary>
+    /// Milliseconds of sustained silence Deepgram waits before setting speech_final = true.
+    /// 1000ms ensures natural conversational pacing, breathing, and clause pauses without cutting mid-sentence.
+    /// </summary>
+    public const string DefaultEndpointingMs = "1000";
+
+    /// <summary>
+    /// Milliseconds of sustained silence Deepgram waits before firing the UtteranceEnd event.
+    /// </summary>
+    public const string DefaultUtteranceEndMs = "1200";
+
     private ListenWebSocketClient? _liveClient;
     private readonly AudioCaptureService _audioCapture;
     private readonly Func<string>? _apiKeyProvider;
@@ -67,14 +78,23 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
             await _liveClient.Subscribe(new EventHandler<SpeechStartedResponse>((sender, e) =>
             {
                 string turnId;
+                bool shouldEmit = false;
                 lock (_lock)
                 {
+                    if (!_turnStarted)
+                    {
+                        _turnStarted = true;
+                        shouldEmit = true;
+                    }
                     turnId = _activeTurnId;
-                    _turnStarted = true;
                 }
-                Console.WriteLine($"[SpeechEngine:Deepgram] Speech started (turn: {turnId})");
-                OnStatusChanged?.Invoke("Listening (speaking)…");
-                OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, turnId));
+
+                if (shouldEmit)
+                {
+                    Console.WriteLine($"[SpeechEngine:Deepgram] Speech started (turn: {turnId})");
+                    OnStatusChanged?.Invoke("Listening (speaking)…");
+                    OnSpeechEvent?.Invoke(new SpeechTurnEvent(string.Empty, SpeechTurnType.StartOfTurn, turnId));
+                }
             }));
 
             await _liveClient.Subscribe(new EventHandler<ResultResponse>((sender, e) =>
@@ -109,6 +129,9 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
                 SampleRate = 16000,
                 Channels = 1,
                 InterimResults = true,
+                VadEvents = true,
+                EndPointing = DefaultEndpointingMs,
+                UtteranceEnd = DefaultUtteranceEndMs,
             };
 
             OnStatusChanged?.Invoke("Connecting to Deepgram Nova-3…");
