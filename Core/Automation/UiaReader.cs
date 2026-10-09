@@ -17,39 +17,10 @@ namespace WiraVoice.Core.Automation;
 /// and produces AXSnapshot with native node hierarchies and roles.
 /// Equivalent to Computah's AXReader.swift.
 /// </summary>
-public sealed class UiaReader : IUiaReader
+public sealed class UiaReader : IDisposable
 {
     private readonly UIA3Automation _automation = new();
     private bool _disposed = false;
-
-    public Task<UiSceneSnapshot> CaptureActiveSceneAsync(int maxNodes = 1500, CancellationToken ct = default)
-    {
-        return Task.Run(async () =>
-        {
-            var snapshot = await CaptureAsync(maxNodes, 0.45, null, ct).ConfigureAwait(false);
-            var candidates = AXGrouping.Candidates(snapshot).Select(c =>
-            {
-                var node = snapshot.Nodes[c.NodeID];
-                return new UiControlCandidate(
-                    Id: c.Id,
-                    Name: node.Label,
-                    Role: node.Role,
-                    Help: node.Help,
-                    BoundingBox: node.Frame ?? Rectangle.Empty,
-                    SupportedOperation: c.Operation.ToWireString(),
-                    NativeElement: node.NativeElement
-                );
-            }).ToList();
-
-            return new UiSceneSnapshot(
-                snapshot.WindowHandle ?? IntPtr.Zero,
-                snapshot.Pid,
-                snapshot.AppName,
-                snapshot.WindowTitle,
-                candidates
-            );
-        }, ct);
-    }
 
     public Task<AXSnapshot> CaptureAsync(int maxNodes = 900, double seconds = 0.35, int? targetPid = null, CancellationToken ct = default)
     {

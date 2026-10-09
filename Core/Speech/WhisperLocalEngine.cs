@@ -25,7 +25,7 @@ public sealed class WhisperLocalEngine : ISpeechEngine
     private const int MaxPreRollBytes = 12800; // 400ms of 16kHz 16-bit mono PCM (16000 * 2 * 0.40)
     public const double SpeechStartThreshold = 0.085; // Audio level to trigger speech start from silence (above 0.04-0.08 room noise)
     public const double SpeechContinueThreshold = 0.020; // Audio level to keep recording while speaking (above room noise floor)
-    public const int SilenceTimeoutMs = 450; // 450ms natural pause window before finalizing utterance
+    public const int SilenceTimeoutMs = 900; // 900ms natural conversational pause window before finalizing utterance
     private bool _isListening = false;
     private bool _inSpeech = false;
     private DateTime _speechStartTime = DateTime.MinValue;

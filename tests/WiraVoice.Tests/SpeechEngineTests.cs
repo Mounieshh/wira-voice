@@ -63,6 +63,12 @@ public class SpeechEngineTests
     }
 
     [Fact]
+    public void WhisperLocalEngine_SilenceTimeout_IsPacedForConversationalPhrasing()
+    {
+        Assert.Equal(900, WhisperLocalEngine.SilenceTimeoutMs);
+    }
+
+    [Fact]
     public void EnvironmentConfig_InitializesWithDefaults()
     {
         EnvironmentConfig.Initialize();

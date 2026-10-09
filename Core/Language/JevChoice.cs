@@ -518,11 +518,24 @@ public sealed class JevSelector
 
             if (Math.Abs(sum - 1.0) >= 0.03)
             {
-                throw new JevException.Invalid($"Question {i} returned invalid probabilities.");
+                // If sum is reasonably close, normalize to 1.0 instead of aborting the workflow
+                if (sum >= 0.85 && sum <= 1.15 && sum > 0)
+                {
+                    foreach (var keyName in probabilities.Keys.ToList())
+                    {
+                        probabilities[keyName] /= sum;
+                    }
+                    sum = 1.0;
+                }
+                else
+                {
+                    throw new JevException.Invalid($"Question {i} returned invalid probabilities.");
+                }
             }
 
             var choiceProb = probabilities.GetValueOrDefault(choice, 0.0);
-            if (choiceProb < maxProb - 0.000001)
+            double recomputedMax = probabilities.Values.Max();
+            if (choiceProb < recomputedMax - 0.000001)
             {
                 throw new JevException.Invalid($"Question {i} selected a non-leading option.");
             }

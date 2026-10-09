@@ -43,6 +43,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
             _status = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(DisplayText));
+            OnPropertyChanged(nameof(FullTextTooltip));
             OnPropertyChanged(nameof(IsPlaceholder));
         }
     }
@@ -55,6 +56,7 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
             _transcript = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(DisplayText));
+            OnPropertyChanged(nameof(FullTextTooltip));
             OnPropertyChanged(nameof(IsPlaceholder));
         }
     }
@@ -69,6 +71,20 @@ public sealed class TopBarViewModel : INotifyPropertyChanged
             }
 
             return _isListening ? "Go ahead, I'm listening…" : "Say a command or click to listen…";
+        }
+    }
+
+    public string FullTextTooltip
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_transcript))
+            {
+                return !string.IsNullOrWhiteSpace(_status) && _status != "Ready" && _status != "Transcribed"
+                    ? $"{_transcript}\nStatus: {_status}"
+                    : _transcript;
+            }
+            return !string.IsNullOrWhiteSpace(_status) ? $"Status: {_status}" : DisplayText;
         }
     }
 

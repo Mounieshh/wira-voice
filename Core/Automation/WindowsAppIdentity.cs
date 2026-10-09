@@ -409,6 +409,8 @@ public static class WindowsAppIdentity
                                 app.AppUserModelID.Equals("Microsoft.Windows.Explorer", StringComparison.OrdinalIgnoreCase) ||
                                 app.Aliases.Any(a => a.Equals("explorer", StringComparison.OrdinalIgnoreCase) || a.Equals("files", StringComparison.OrdinalIgnoreCase));
 
+        var procCache = new Dictionary<uint, (string ProcName, string Friendly)?>();
+
         EnumWindows((hWnd, lParam) =>
         {
             // Only consider windows that are visible or minimized
@@ -437,9 +439,24 @@ public static class WindowsAppIdentity
 
             try
             {
-                using var proc = Process.GetProcessById((int)pid);
-                string procName = proc.ProcessName;
-                string friendly = GetFriendlyAppName(proc);
+                if (!procCache.TryGetValue(pid, out var cachedInfo))
+                {
+                    try
+                    {
+                        using var proc = Process.GetProcessById((int)pid);
+                        cachedInfo = (proc.ProcessName, GetFriendlyAppName(proc));
+                    }
+                    catch
+                    {
+                        cachedInfo = null;
+                    }
+                    procCache[pid] = cachedInfo;
+                }
+
+                if (!cachedInfo.HasValue) return true;
+
+                string procName = cachedInfo.Value.ProcName;
+                string friendly = cachedInfo.Value.Friendly;
 
                 // If hosted under ApplicationFrameHost (UWP), caption is the friendly app name
                 if (procName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(title))

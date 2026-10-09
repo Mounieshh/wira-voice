@@ -110,12 +110,16 @@ public sealed class DeepgramFluxEngine : ISpeechEngine
             await _liveClient.Subscribe(new EventHandler<CloseResponse>((sender, e) =>
             {
                 Console.WriteLine("[SpeechEngine:Deepgram] Connection closed.");
+                _isListening = false;
+                _audioCapture.Stop();
                 OnStatusChanged?.Invoke("Deepgram disconnected");
             }));
 
             await _liveClient.Subscribe(new EventHandler<ErrorResponse>((sender, e) =>
             {
                 Console.WriteLine($"[SpeechEngine:Deepgram] Error: {e.Message}");
+                _isListening = false;
+                _audioCapture.Stop();
                 OnStatusChanged?.Invoke($"Deepgram error: {e.Message}");
             }));
 
